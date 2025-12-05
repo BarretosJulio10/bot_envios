@@ -216,7 +216,7 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
             message_text: messageText,
             file_url: publicUrl,
             status: 'queued',
-            file_type: sendAsDocument ? 'document' : null
+            file_type: sendAsDocument ? 'document' : undefined
           });
 
           successCount++;
