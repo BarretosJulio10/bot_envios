@@ -23,6 +23,7 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [blacklistInput, setBlacklistInput] = useState("");
   const [sendAsDocument, setSendAsDocument] = useState(false);
+  const [sendAsSticker, setSendAsSticker] = useState(false);
   const queryClient = useQueryClient();
 
   const addToBlacklist = useMutation({
@@ -216,7 +217,7 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
             message_text: messageText,
             file_url: publicUrl,
             status: 'queued',
-            file_type: sendAsDocument ? 'document' : undefined
+            file_type: sendAsSticker ? 'sticker' : (sendAsDocument ? 'document' : undefined)
           });
 
           successCount++;
@@ -299,17 +300,38 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
                 {files.length} arquivo(s) selecionado(s)
               </p>
             )}
-            <div className="flex items-center space-x-2 pt-2">
-              <input
-                type="checkbox"
-                id="sendAsDocument"
-                checked={sendAsDocument}
-                onChange={(e) => setSendAsDocument(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-              />
-              <Label htmlFor="sendAsDocument" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                Enviar como documento (sem compressão)
-              </Label>
+            <div className="flex flex-col space-y-2 pt-2">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="sendAsDocument"
+                  checked={sendAsDocument}
+                  onChange={(e) => {
+                    setSendAsDocument(e.target.checked);
+                    if (e.target.checked) setSendAsSticker(false);
+                  }}
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <Label htmlFor="sendAsDocument" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                  Enviar como documento (sem compressão)
+                </Label>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="sendAsSticker"
+                  checked={sendAsSticker}
+                  onChange={(e) => {
+                    setSendAsSticker(e.target.checked);
+                    if (e.target.checked) setSendAsDocument(false);
+                  }}
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                <Label htmlFor="sendAsSticker" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                  Enviar como figurinha
+                </Label>
+              </div>
             </div>
           </div>
 

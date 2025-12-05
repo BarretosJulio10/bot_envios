@@ -178,19 +178,22 @@ serve(async (req) => {
             const signedUrl = signedData.signedUrl;
             console.log(`Signed URL generated: ${signedUrl.substring(0, 100)}...`);
 
-            // Detect media type from filename extension or force document if specified
+            // Detect media type from filename extension or force document/sticker if specified
             const ext = message.filename.split('.').pop()?.toLowerCase() || '';
             let mediaType = 'document';
 
             if (message.file_type === 'document') {
               mediaType = 'document';
+            } else if (message.file_type === 'sticker') {
+              mediaType = 'sticker';
             } else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
             else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg'].includes(ext)) mediaType = 'video';
             else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
             else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
 
             // Send media via Evolution API
-            const mediaPayload = {
+            let endpoint = `${evolutionApiUrl}/message/sendMedia/${config.instance_id}`;
+            let payload: any = {
               number: message.phone,
               mediatype: mediaType,
               media: signedUrl,
@@ -198,17 +201,25 @@ serve(async (req) => {
               caption: message.message_text || '',
             };
 
-            console.log(`Sending media to ${message.phone}:`, JSON.stringify(mediaPayload, null, 2));
+            if (mediaType === 'sticker') {
+              endpoint = `${evolutionApiUrl}/message/sendSticker/${config.instance_id}`;
+              payload = {
+                number: message.phone,
+                sticker: signedUrl,
+              };
+            }
+
+            console.log(`Sending ${mediaType} to ${message.phone}:`, JSON.stringify(payload, null, 2));
 
             const response = await fetch(
-              `${evolutionApiUrl}/message/sendMedia/${config.instance_id}`,
+              endpoint,
               {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   'apikey': evolutionApiKey,
                 },
-                body: JSON.stringify(mediaPayload),
+                body: JSON.stringify(payload),
               }
             );
 
@@ -218,7 +229,7 @@ serve(async (req) => {
             }
 
             const result = await response.json();
-            console.log(`Media sent successfully to ${message.phone}:`, result);
+            console.log(`${mediaType} sent successfully to ${message.phone}:`, result);
 
             // Update to sent
             await supabase
