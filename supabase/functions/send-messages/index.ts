@@ -26,7 +26,7 @@ serve(async (req) => {
 
     const token = authHeader.replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-    
+
     if (userError || !user) {
       throw new Error('Unauthorized');
     }
@@ -87,10 +87,10 @@ serve(async (req) => {
       const { data: blacklist } = await supabase
         .from('blacklist')
         .select('phone, number_ids');
-      
+
       const blacklistedNumbers = new Set(blacklist?.map(b => b.phone) || []);
       const blacklistedIds = new Set<string>();
-      
+
       // TODO: Parsear IDs da blacklist
       blacklist?.forEach(item => {
         if (item.number_ids) {
@@ -136,7 +136,7 @@ serve(async (req) => {
       const targetMs = 45000; // 45 seconds max execution time
       const computedBatch = Math.floor(targetMs / Math.max(1, avgDelay));
       const safeBatch = Math.max(1, Math.min(config.pause_after || 100, Math.min(10, computedBatch)));
-      
+
       const batch = allFilteredMessages.slice(0, safeBatch);
       console.log(`📦 Processando lote seguro: safeBatch=${safeBatch}, avgDelay=${avgDelay}ms, total na fila=${allFilteredMessages.length}`);
 
@@ -178,10 +178,13 @@ serve(async (req) => {
             const signedUrl = signedData.signedUrl;
             console.log(`Signed URL generated: ${signedUrl.substring(0, 100)}...`);
 
-            // Detect media type from filename extension
+            // Detect media type from filename extension or force document if specified
             const ext = message.filename.split('.').pop()?.toLowerCase() || '';
             let mediaType = 'document';
-            if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
+
+            if (message.file_type === 'document') {
+              mediaType = 'document';
+            } else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
             else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg'].includes(ext)) mediaType = 'video';
             else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
             else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
@@ -270,7 +273,7 @@ serve(async (req) => {
     console.error('Error in send-messages function:', error);
     return new Response(
       JSON.stringify({ error: error.message }),
-      { 
+      {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       }
