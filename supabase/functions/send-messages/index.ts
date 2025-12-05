@@ -224,9 +224,7 @@ serve(async (req) => {
 
               payload = {
                 number: message.phone,
-                sticker: {
-                  base64: `data:${mimeType};base64,${base64}`
-                }
+                sticker: `data:${mimeType};base64,${base64}`
               };
             }
 
