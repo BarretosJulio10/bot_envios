@@ -203,9 +203,30 @@ serve(async (req) => {
 
             if (mediaType === 'sticker') {
               endpoint = `${evolutionApiUrl}/message/sendSticker/${config.instance_id}`;
+
+              // Fetch the image and convert to base64 using chunks to avoid stack overflow
+              const imageResponse = await fetch(signedUrl);
+              if (!imageResponse.ok) throw new Error(`Failed to fetch image for sticker: ${imageResponse.statusText}`);
+              const arrayBuffer = await imageResponse.arrayBuffer();
+
+              const bytes = new Uint8Array(arrayBuffer);
+              let binary = '';
+              const len = bytes.byteLength;
+              const chunkSize = 8192; // Process in 8KB chunks
+
+              for (let i = 0; i < len; i += chunkSize) {
+                const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+                binary += String.fromCharCode.apply(null, Array.from(chunk));
+              }
+
+              const base64 = btoa(binary);
+              const mimeType = imageResponse.headers.get('content-type') || 'image/png';
+
               payload = {
                 number: message.phone,
-                sticker: signedUrl,
+                sticker: {
+                  base64: `data:${mimeType};base64,${base64}`
+                }
               };
             }
 
