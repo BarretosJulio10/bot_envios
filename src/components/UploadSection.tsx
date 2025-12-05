@@ -45,11 +45,11 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
       if (isNumberIds) {
         const { error } = await supabase
           .from('blacklist')
-          .insert({
+          .upsert({
             user_id: user.id,
             number_ids: items.join(','),
             phone: `IDs: ${items.join(',')}`
-          });
+          }, { onConflict: 'user_id, phone', ignoreDuplicates: true });
         if (error) throw error;
       } else {
         const records = items.map(phone => ({
@@ -59,7 +59,7 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
 
         const { error } = await supabase
           .from('blacklist')
-          .insert(records);
+          .upsert(records, { onConflict: 'user_id, phone', ignoreDuplicates: true });
         if (error) throw error;
       }
     },
