@@ -122,7 +122,7 @@ export default function SavedGroupListsManager({ selectedGroups, onLoadList }: S
     <>
       <Card className="p-4 space-y-4">
         <h3 className="font-semibold">Gerenciar Listas de Grupos</h3>
-        
+
         <div className="space-y-2">
           <Label htmlFor="list_name">Nome da Lista</Label>
           <div className="flex gap-2">
@@ -140,36 +140,39 @@ export default function SavedGroupListsManager({ selectedGroups, onLoadList }: S
         </div>
 
         {lists.length > 0 && (
-          <div className="space-y-2">
-            <Label>Listas Salvas</Label>
-            <div className="space-y-2 max-h-48 overflow-y-auto">
+          <div className="space-y-3">
+            <Label className="text-lg font-semibold text-foreground/90">Listas Salvas</Label>
+            <div className="space-y-3 max-h-72 overflow-y-auto pr-2 custom-scrollbar">
               {lists.map((list) => (
                 <div
                   key={list.id}
-                  className="flex items-center justify-between p-3 bg-accent/50 rounded-lg"
+                  className="flex items-center justify-between p-4 bg-[#166534] hover:bg-[#14532d] transition-colors rounded-2xl shadow-lg border border-white/10"
                 >
-                  <div className="flex-1">
-                    <div className="font-medium">{list.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {list.group_ids.length} grupos • {new Date(list.created_at).toLocaleDateString('pt-BR')}
+                  <div className="flex-1 space-y-1">
+                    <div className="font-bold text-white text-lg">{list.name}</div>
+                    <div className="text-xs text-white/80 flex items-center gap-2">
+                      <span className="bg-black/20 px-2 py-0.5 rounded-full">{list.group_ids.length} grupos</span>
+                      <span>•</span>
+                      <span>{new Date(list.created_at).toLocaleDateString('pt-BR')}</span>
                     </div>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-3">
                     <Button
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       onClick={() => loadList(list.group_ids)}
-                      className="gap-2"
+                      className="bg-black hover:bg-black/80 text-white border-none rounded-xl h-10 px-4 gap-2 font-medium"
                     >
-                      <Upload className="h-3 w-3" />
+                      <Upload className="h-4 w-4" />
                       Carregar
                     </Button>
                     <Button
                       variant="destructive"
-                      size="sm"
+                      size="icon"
                       onClick={() => confirmDelete(list.id)}
+                      className="bg-[#ef4444] hover:bg-[#dc2626] text-white rounded-xl h-10 w-10 shadow-md"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
                 </div>

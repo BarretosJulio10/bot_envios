@@ -1,0 +1,8 @@
+{
+    "deno.enable": true,
+    "deno.enablePaths": [
+        "supabase"
+    ],
+    "deno.unstable": true,
+    "deno.lint": true
+}

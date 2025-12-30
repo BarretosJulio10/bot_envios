@@ -140,7 +140,7 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
             }
 
             // Upload file
-            const filePath = `${user.id}/${Date.now()}_${fileName}`;
+            const filePath = `${user.id}/${Date.now()}_${Math.random().toString(36).substring(7)}_${fileName}`;
             const { error: uploadError } = await supabase.storage
               .from('whatsapp-files')
               .upload(filePath, file);
@@ -197,7 +197,7 @@ export default function UploadSection({ onUploadComplete }: UploadSectionProps) 
           if (!phone || blacklistedNumbers.has(phone) || blacklistedIds.has(fileId)) continue;
 
           // Upload file
-          const filePath = `${user.id}/${Date.now()}_${fileName}`;
+          const filePath = `${user.id}/${Date.now()}_${Math.random().toString(36).substring(7)}_${fileName}`;
           const { error: uploadError } = await supabase.storage
             .from('whatsapp-files')
             .upload(filePath, file);

@@ -35,12 +35,14 @@ export default function GroupSender() {
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
-  const [file, setFile] = useState<File | null>(null);
-  const [filePreview, setFilePreview] = useState<string>("");
   const [caption, setCaption] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [filePreviews, setFilePreviews] = useState<string[]>([]);
   const [messages, setMessages] = useState<GroupMessage[]>([]);
-  const [messagesPerBatch, setMessagesPerBatch] = useState(5);
-  const [pauseDuration, setPauseDuration] = useState(30);
+  const [messagesPerBatch, setMessagesPerBatch] = useState(10);
+  const [pauseDuration, setPauseDuration] = useState(120);
+  const [sendAsDocument, setSendAsDocument] = useState(false);
+  const [sendAsSticker, setSendAsSticker] = useState(false);
 
   useEffect(() => {
     loadMessages();
@@ -112,21 +114,27 @@ export default function GroupSender() {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      
-      // Preview apenas para imagens
-      if (selectedFile.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          setFilePreview(reader.result as string);
-        };
-        reader.readAsDataURL(selectedFile);
-      } else {
-        setFilePreview("");
-      }
+    const selectedFiles = Array.from(e.target.files || []);
+    if (selectedFiles.length > 0) {
+      setFiles(prev => [...prev, ...selectedFiles]);
+
+      selectedFiles.forEach(file => {
+        if (file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            setFilePreviews(prev => [...prev, reader.result as string]);
+          };
+          reader.readAsDataURL(file);
+        } else {
+          setFilePreviews(prev => [...prev, ""]);
+        }
+      });
     }
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+    setFilePreviews(prev => prev.filter((_, i) => i !== index));
   };
 
   const getFileType = (mimeType: string): string => {
@@ -156,7 +164,7 @@ export default function GroupSender() {
 
   const loadListGroups = async (groupIds: string[]) => {
     setSelectedGroups(new Set(groupIds));
-    
+
     // Se não temos os grupos carregados, buscar automaticamente
     if (groups.length === 0) {
       await fetchGroups();
@@ -169,8 +177,8 @@ export default function GroupSender() {
       return;
     }
 
-    if (!caption && !file) {
-      toast.error("Adicione uma mensagem ou arquivo");
+    if (!caption && files.length === 0) {
+      toast.error("Adicione uma mensagem ou arquivos");
       return;
     }
 
@@ -179,29 +187,40 @@ export default function GroupSender() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Usuário não autenticado");
 
-      let fileUrl = null;
-      let fileType = 'image';
+      // Primeiro, processar todos os uploads e obter as URLs/metadata
+      const uploadedFilesMetadata = [];
 
-      // Upload do arquivo se existir
-      if (file) {
+      for (const file of files) {
+        console.log("Iniciando upload do arquivo:", file.name);
         const fileExt = file.name.split('.').pop();
-        const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+        const fileName = `${user.id}/${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
 
-        const { error: uploadError } = await supabase.storage
+        const { data: uploadData, error: uploadError } = await supabase.storage
           .from('whatsapp-files')
           .upload(fileName, file);
 
-        if (uploadError) throw uploadError;
+        if (uploadError) {
+          console.error("Erro no upload de", file.name, ":", uploadError);
+          throw uploadError;
+        }
 
-        const { data: { publicUrl } } = supabase.storage
+        const { data: urlData } = supabase.storage
           .from('whatsapp-files')
           .getPublicUrl(fileName);
 
-        fileUrl = publicUrl;
-        fileType = getFileType(file.type);
+        if (!urlData || !urlData.publicUrl) {
+          throw new Error(`Não foi possível gerar a URL pública para ${file.name}`);
+        }
+
+        uploadedFilesMetadata.push({
+          url: urlData.publicUrl,
+          type: getFileType(file.type),
+          name: file.name
+        });
+        console.log("Arquivo processado:", file.name, "->", urlData.publicUrl);
       }
 
-      // Atualizar configuração com os novos parâmetros (convertendo segundos para milissegundos)
+      // Atualizar configuração
       const { error: configError } = await supabase
         .from('evolution_config')
         .update({
@@ -212,19 +231,48 @@ export default function GroupSender() {
 
       if (configError) throw configError;
 
-      // Criar mensagens para cada grupo selecionado
-      const messagesToInsert = Array.from(selectedGroups).map(groupId => {
+      const messagesToInsert: any[] = [];
+      const userFileType = sendAsSticker ? 'sticker' : (sendAsDocument ? 'document' : null);
+      let globalIndex = 0;
+
+      // Ordem solicitada pelo usuário: Todas as mensagens para um grupo primeiro, depois para o outro
+      for (const groupId of Array.from(selectedGroups)) {
         const group = groups.find(g => g.id === groupId);
-        return {
-          user_id: user.id,
-          group_id: groupId,
-          group_name: group?.name || 'Desconhecido',
-          image_url: fileUrl,
-          file_type: fileType,
-          caption: caption || null,
-          status: 'queued',
-        };
-      });
+
+        // Se temos arquivos, criar uma mensagem para cada arquivo no grupo atual
+        if (uploadedFilesMetadata.length > 0) {
+          uploadedFilesMetadata.forEach((fileMeta, index) => {
+            messagesToInsert.push({
+              user_id: user.id,
+              group_id: groupId,
+              group_name: group?.name || 'Desconhecido',
+              image_url: fileMeta.url,
+              file_name: fileMeta.name,
+              file_type: userFileType || fileMeta.type,
+              caption: index === 0 ? (caption || null) : null,
+              status: 'queued',
+              ordering_index: globalIndex++
+            });
+          });
+        }
+        // Se NÃO temos arquivos mas temos legenda, criar mensagem de texto
+        else if (caption) {
+          messagesToInsert.push({
+            user_id: user.id,
+            group_id: groupId,
+            group_name: group?.name || 'Desconhecido',
+            image_url: null,
+            file_name: null,
+            file_type: 'image',
+            caption: caption,
+            status: 'queued',
+            ordering_index: globalIndex++
+          });
+        }
+      }
+
+
+      console.log("Inserindo mensagens na fila:", messagesToInsert);
 
       const { error: insertError } = await supabase
         .from('group_messages')
@@ -233,13 +281,15 @@ export default function GroupSender() {
       if (insertError) throw insertError;
 
       toast.success(`${messagesToInsert.length} mensagens adicionadas à fila!`);
-      
+
       // Limpar formulário
       setSelectedGroups(new Set());
-      setFile(null);
-      setFilePreview("");
+      setFiles([]);
+      setFilePreviews([]);
       setCaption("");
-      
+      setSendAsDocument(false);
+      setSendAsSticker(false);
+
     } catch (error: any) {
       toast.error(error.message || 'Erro ao criar mensagens');
     } finally {
@@ -302,7 +352,7 @@ export default function GroupSender() {
       }
 
       toast.success("Banco de dados limpo automaticamente!");
-      
+
     } catch (error: any) {
       console.error('Cleanup error:', error);
     }
@@ -340,11 +390,11 @@ export default function GroupSender() {
           .remove(filePaths);
       }
 
-      setFile(null);
-      setFilePreview("");
+      setFiles([]);
+      setFilePreviews([]);
       setCaption("");
       toast.success("Tudo limpo!");
-      
+
     } catch (error: any) {
       toast.error(error.message || 'Erro ao limpar');
     }
@@ -386,7 +436,9 @@ export default function GroupSender() {
               value={messagesPerBatch}
               onChange={(e) => setMessagesPerBatch(parseInt(e.target.value))}
               min={1}
+              placeholder="Ex: 10 (recomendado para evitar bloqueio)"
             />
+            <p className="text-xs text-muted-foreground">Recomendado: 5-10 mensagens</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="pause_duration">Duração da pausa (segundos)</Label>
@@ -397,7 +449,9 @@ export default function GroupSender() {
               onChange={(e) => setPauseDuration(parseInt(e.target.value))}
               min={1}
               step={1}
+              placeholder="Ex: 120 (2 minutos)"
             />
+            <p className="text-xs text-muted-foreground">Recomendado: 120-180 segundos (2-3 min)</p>
           </div>
         </div>
       </Card>
@@ -441,29 +495,78 @@ export default function GroupSender() {
       )}
 
       {/* Gerenciador de Listas */}
-      <SavedGroupListsManager 
+      <SavedGroupListsManager
         selectedGroups={selectedGroups}
         onLoadList={loadListGroups}
       />
 
       {/* Upload e Mensagem */}
       <Card className="p-4 space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="file">Arquivo (opcional - imagem, vídeo, áudio ou documento)</Label>
+        <div className="space-y-4">
+          <Label htmlFor="file">Arquivos (opcional - você pode selecionar vários)</Label>
           <Input
             id="file"
             type="file"
             onChange={handleFileChange}
+            multiple
           />
-          {filePreview && (
-            <img src={filePreview} alt="Preview" className="w-32 h-32 object-cover rounded-lg" />
-          )}
-          {file && !filePreview && (
-            <div className="p-3 bg-accent rounded-lg">
-              <p className="text-sm font-medium">{file.name}</p>
-              <p className="text-xs text-muted-foreground">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+
+          {files.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 mt-2">
+              {files.map((file, index) => (
+                <div key={index} className="relative group bg-accent p-2 rounded-xl border border-white/10 hover:border-white/20 transition-all shadow-sm">
+                  {filePreviews[index] ? (
+                    <img src={filePreviews[index]} alt="Preview" className="w-full h-24 object-cover rounded-lg" />
+                  ) : (
+                    <div className="w-full h-24 flex flex-col items-center justify-center bg-black/40 rounded-lg p-1 text-center">
+                      <p className="text-[10px] font-medium truncate w-full px-1">{file.name}</p>
+                      <p className="text-[9px] text-muted-foreground">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => removeFile(index)}
+                    className="absolute -top-2 -right-2 bg-[#ef4444] text-white rounded-full p-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
+
+          <div className="flex flex-col space-y-2 pt-2">
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="groupSendAsDocument"
+                checked={sendAsDocument}
+                onChange={(e) => {
+                  setSendAsDocument(e.target.checked);
+                  if (e.target.checked) setSendAsSticker(false);
+                }}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              <Label htmlFor="groupSendAsDocument" className="text-sm font-medium leading-none">
+                Enviar como documento (sem compressão)
+              </Label>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="groupSendAsSticker"
+                checked={sendAsSticker}
+                onChange={(e) => {
+                  setSendAsSticker(e.target.checked);
+                  if (e.target.checked) setSendAsDocument(false);
+                }}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              <Label htmlFor="groupSendAsSticker" className="text-sm font-medium leading-none">
+                Enviar como figurinha
+              </Label>
+            </div>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -515,8 +618,8 @@ export default function GroupSender() {
                       <Badge
                         variant={
                           msg.status === 'sent' ? 'default' :
-                          msg.status === 'failed' || msg.status === 'permanently_failed' ? 'destructive' :
-                          msg.status === 'sending' ? 'secondary' : 'outline'
+                            msg.status === 'failed' || msg.status === 'permanently_failed' ? 'destructive' :
+                              msg.status === 'sending' ? 'secondary' : 'outline'
                         }
                       >
                         {msg.status}
