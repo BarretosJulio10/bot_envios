@@ -121,9 +121,19 @@ export default function IndividualSender() {
                 if (more) {
                     // Há mais mensagens na fila
                     if (localSentSincePause < pauseAfter) {
-                        // Ainda não atingiu o limite de pause_after, continuar imediatamente
-                        console.log(`⏩ Continuando imediatamente (${localSentSincePause}/${pauseAfter})...`);
-                        sendLoop();
+                        // Ainda não atingiu o limite de pause_after
+                        // Calcular delay aleatório
+                        const delayMin = configData.delay_min || 10000;
+                        const delayMax = configData.delay_max || 20000;
+                        const randomDelay = Math.floor(Math.random() * (delayMax - delayMin + 1)) + delayMin;
+
+                        console.log(`⏳ Aguardando delay: ${randomDelay}ms (${localSentSincePause}/${pauseAfter})...`);
+
+                        setTimeout(() => {
+                            if (isSendingRef.current) {
+                                sendLoop();
+                            }
+                        }, randomDelay);
                     } else {
                         // Atingiu o limite, pausar antes de continuar
                         console.log(`⏸️ Atingiu ${pauseAfter} envios. Pausando por ${pauseDuration}ms...`);
