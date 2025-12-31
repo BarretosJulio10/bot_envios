@@ -12,6 +12,7 @@ export default function IndividualSender() {
     const [isSending, setIsSending] = useState(false);
     const isSendingRef = useRef(false);
     const [sentSincePause, setSentSincePause] = useState(0);
+    const retryAttempts = useRef(0);
 
     // Refs for tracking totals during a session without re-renders affecting logic
     const sessionStats = useRef({
@@ -121,8 +122,6 @@ export default function IndividualSender() {
                     // Há mais mensagens na fila
                     if (localSentSincePause < pauseAfter) {
                         // Ainda não atingiu o limite de pause_after, continuar imediatamente
-                        // (O delay entre mensagens individuais acontece DENTRO da Edge Function no backend OU se for 1 por 1, o backend retorna rápido.
-                        //  No caso do backend "legacy" que revertemos, ele processa lotes e delays internos. Se revertemos para o código de 5 dias atrás, ele deve ter isso.)
                         console.log(`⏩ Continuando imediatamente (${localSentSincePause}/${pauseAfter})...`);
                         sendLoop();
                     } else {
@@ -142,18 +141,54 @@ export default function IndividualSender() {
                         }, pauseDuration);
                     }
                 } else {
-                    // Não há mais mensagens, finalizar
-                    console.log('🎉 Todos os envios concluídos!');
-                    setIsSending(false);
-                    isSendingRef.current = false;
-                    toast.success(`Envio concluído! Total enviado: ${sessionStats.current.totalSent}`);
-                    await cleanupStorageFiles();
+                    // Não há mais mensagens na fila (status: queued zerado)
+
+                    // Lógica de Auto-Retry
+                    // Verificar se houve falhas na sessão atual OU se existem mensagens com status 'failed' no banco
+                    // Para ser mais preciso, vamos checar no banco se restaram falhas
+                    const { count: failedCount } = await supabase
+                        .from('messages')
+                        .select('*', { count: 'exact', head: true })
+                        .eq('status', 'failed');
+
+                    if (failedCount && failedCount > 0 && retryAttempts.current < 3) {
+                        retryAttempts.current += 1;
+                        console.log(`⚠️ Falhas detectadas (${failedCount}). Tentativa de reenvio ${retryAttempts.current}/3 em 5s...`);
+                        toast.warning(`Reenviando ${failedCount} falhas em 5s (Tentativa ${retryAttempts.current}/3)...`);
+
+                        setTimeout(async () => {
+                            if (!isSendingRef.current) return;
+
+                            // Resetar status de falha para queued
+                            await supabase.functions.invoke('send-messages', {
+                                body: { action: 'retry' }
+                            });
+
+                            // Reiniciar loop
+                            sendLoop();
+                        }, 5000);
+
+                    } else {
+                        // Finalizar de vez
+                        console.log('🎉 Todos os envios concluídos (ou limite de retries atingido)!');
+                        setIsSending(false);
+                        isSendingRef.current = false;
+
+                        if (retryAttempts.current >= 3) {
+                            toast.error(`Finalizado com falhas após 3 tentativas. Total enviado: ${sessionStats.current.totalSent}`);
+                        } else {
+                            toast.success(`Envio concluído! Total enviado: ${sessionStats.current.totalSent}`);
+                        }
+
+                        // REMOVIDO: await cleanupStorageFiles(); -> Agora é manual
+                    }
                 }
             } catch (err: any) {
                 console.error('❌ Batch error:', err);
-                setIsSending(false);
-                isSendingRef.current = false;
-                toast.error(err.message || 'Erro durante o envio');
+                // Se der erro grave na requisição, tenta uma vez após 5s se não for stop manual
+                setTimeout(() => {
+                    if (isSendingRef.current) sendLoop();
+                }, 5000);
             }
         };
 
