@@ -129,172 +129,103 @@ serve(async (req) => {
 
       console.log(`Total de ${allFilteredMessages.length} mensagens para enviar`);
 
-      // Calculate safe batch size based on delays to avoid timeout
-      const delayMin = config.delay_min || 10000;
-      const delayMax = config.delay_max || 30000;
-      const avgDelay = (delayMin + delayMax) / 2;
-      const targetMs = 45000; // 45 seconds max execution time
-      const computedBatch = Math.floor(targetMs / Math.max(1, avgDelay));
-      const safeBatch = Math.max(1, Math.min(config.pause_after || 100, Math.min(10, computedBatch)));
+      const batchSize = config.pause_after || 5;
+      const pauseDuration = config.pause_duration || 30000;
 
-      const batch = allFilteredMessages.slice(0, safeBatch);
-      console.log(`📦 Processando lote seguro: safeBatch=${safeBatch}, avgDelay=${avgDelay}ms, total na fila=${allFilteredMessages.length}`);
-
-      let sentCount = 0;
-      let failedCount = 0;
-
-      for (let i = 0; i < batch.length; i++) {
-        const message = batch[i];
-
+      // Executar o envio em background para impedir timeout no painel do usuário
+      // @ts-ignore - EdgeRuntime is injected globally by Deno/Supabase
+      EdgeRuntime.waitUntil((async () => {
         try {
-          // Update status to sending
-          await supabase
-            .from('messages')
-            .update({ status: 'sending', attempts: message.attempts + 1 })
-            .eq('id', message.id);
+          // Processa lotes intercalados por pause_duration
+          for (let i = 0; i < allFilteredMessages.length; i += batchSize) {
+            const batch = allFilteredMessages.slice(i, i + batchSize);
+            console.log(`📦 Processando lote: ${batch.length} msg(s) (Índice ${i} até ${i + batchSize - 1})`);
 
-          console.log(`Processing message ${message.id}: ${message.filename} to ${message.phone}`);
+            for (let j = 0; j < batch.length; j++) {
+              const message = batch[j];
+              try {
+                // Update status to sending
+                await supabase.from('messages').update({ status: 'sending', attempts: message.attempts + 1 }).eq('id', message.id);
+                console.log(`Processando mensagem ${message.id}: ${message.filename} para ${message.phone}`);
 
-          if (message.file_url) {
-            // Extract file path from the public URL
-            const urlParts = message.file_url.split('/whatsapp-files/');
-            if (urlParts.length < 2) {
-              throw new Error('Caminho do arquivo inválido na URL');
-            }
-            const filePath = urlParts[1]; // {user_id}/{filename}
+                if (!message.file_url) throw new Error('Nenhum arquivo apontado');
+                
+                // Extração e assinatura de URL
+                const urlParts = message.file_url.split('/whatsapp-files/');
+                if (urlParts.length < 2) throw new Error('Caminho inválido');
+                const filePath = urlParts[1];
 
-            console.log(`Generating signed URL for: ${filePath}`);
+                const { data: signedData, error: signedError } = await supabase.storage.from('whatsapp-files').createSignedUrl(filePath, 60 * 30);
+                if (signedError || !signedData?.signedUrl) throw new Error(`Erro URL: ${signedError?.message || ''}`);
+                const signedUrl = signedData.signedUrl;
 
-            // Generate signed URL (valid for 30 minutes)
-            const { data: signedData, error: signedError } = await supabase
-              .storage
-              .from('whatsapp-files')
-              .createSignedUrl(filePath, 60 * 30);
+                const ext = message.filename?.split('.').pop()?.toLowerCase() || '';
+                let mediaType = 'document';
+                if (message.file_type === 'document') mediaType = 'document';
+                else if (message.file_type === 'sticker') mediaType = 'sticker';
+                else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
+                else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg'].includes(ext)) mediaType = 'video';
+                else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
+                else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
 
-            if (signedError || !signedData?.signedUrl) {
-              throw new Error(`Erro ao gerar URL assinada: ${signedError?.message || 'URL não gerada'}`);
-            }
+                let endpoint = `${evolutionApiUrl}/message/sendMedia/${config.instance_id}`;
+                let payload: any = {
+                  number: message.phone,
+                  mediatype: mediaType,
+                  media: signedUrl,
+                  fileName: message.filename,
+                  caption: message.message_text || '',
+                  delay: 1200,
+                  presence: 'composing'
+                };
 
-            const signedUrl = signedData.signedUrl;
-            console.log(`Signed URL generated: ${signedUrl.substring(0, 100)}...`);
+                if (mediaType === 'sticker') {
+                  endpoint = `${evolutionApiUrl}/message/sendSticker/${config.instance_id}`;
+                  payload = { number: message.phone, sticker: signedUrl };
+                }
 
-            // Detect media type from filename extension or force document/sticker if specified
-            const ext = message.filename.split('.').pop()?.toLowerCase() || '';
-            let mediaType = 'document';
-
-            if (message.file_type === 'document') {
-              mediaType = 'document';
-            } else if (message.file_type === 'sticker') {
-              mediaType = 'sticker';
-            } else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
-            else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg'].includes(ext)) mediaType = 'video';
-            else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
-            else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
-
-            // Send media via Evolution API
-            let endpoint = `${evolutionApiUrl}/message/sendMedia/${config.instance_id}`;
-            let payload: any = {
-              number: message.phone,
-              mediatype: mediaType,
-              media: signedUrl,
-              fileName: message.filename,
-              caption: message.message_text || '',
-            };
-
-            if (mediaType === 'sticker') {
-              endpoint = `${evolutionApiUrl}/message/sendSticker/${config.instance_id}`;
-
-              // Fetch the image and convert to base64 using chunks to avoid stack overflow
-              const imageResponse = await fetch(signedUrl);
-              if (!imageResponse.ok) throw new Error(`Failed to fetch image for sticker: ${imageResponse.statusText}`);
-              const arrayBuffer = await imageResponse.arrayBuffer();
-
-              const bytes = new Uint8Array(arrayBuffer);
-              let binary = '';
-              const len = bytes.byteLength;
-              const chunkSize = 8192; // Process in 8KB chunks
-
-              for (let i = 0; i < len; i += chunkSize) {
-                const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
-                binary += String.fromCharCode.apply(null, Array.from(chunk));
+                const response = await fetch(endpoint, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'apikey': evolutionApiKey },
+                  body: JSON.stringify(payload),
+                });
+                
+                if (!response.ok) {
+                  const errorBody = await response.text();
+                  throw new Error(`Evolution API ${response.status}: ${errorBody}`);
+                }
+                const result = await response.json();
+                await supabase.from('messages').update({ status: 'sent', sent_at: new Date().toISOString(), evolution_msg_id: result.key?.id || null, error_message: null }).eq('id', message.id);
+                console.log(`Msg enviada p/ ${message.phone}`);
+              } catch (err: any) {
+                console.error(`Falha msg ${message.id}:`, err);
+                await supabase.from('messages').update({ status: 'failed', error_message: err.message || 'Erro' }).eq('id', message.id);
               }
 
-              const base64 = btoa(binary);
-              const mimeType = imageResponse.headers.get('content-type') || 'image/png';
-
-              payload = {
-                number: message.phone,
-                sticker: `data:${mimeType};base64,${base64}`
-              };
-            }
-
-            console.log(`Sending ${mediaType} to ${message.phone}:`, JSON.stringify(payload, null, 2));
-
-            const response = await fetch(
-              endpoint,
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'apikey': evolutionApiKey,
-                },
-                body: JSON.stringify(payload),
+              // Anti-ban delay entre mensagens do mesmo lote (exceto na última mensagem da fila geral)
+              if (i + j < allFilteredMessages.length - 1) {
+                const delayMs = Math.random() * (config.delay_max - config.delay_min) + config.delay_min;
+                console.log(`Timeout Msg: Aguardando ${delayMs}ms anti-ban`);
+                await new Promise(r => setTimeout(r, delayMs));
               }
-            );
+            } // Fim do For do Batch Interno
 
-            if (!response.ok) {
-              const errorBody = await response.text();
-              throw new Error(`Evolution API ${response.status}: ${errorBody}`);
+            // Se ainda houver próximos lotes, aplicar a pausa longa (pause_duration)
+            if (i + batchSize < allFilteredMessages.length) {
+              console.log(`Pausa Longa entre lotes: Aguardando ${pauseDuration}ms`);
+              await new Promise(r => setTimeout(r, pauseDuration));
             }
-
-            const result = await response.json();
-            console.log(`${mediaType} sent successfully to ${message.phone}:`, result);
-
-            // Update to sent
-            await supabase
-              .from('messages')
-              .update({
-                status: 'sent',
-                sent_at: new Date().toISOString(),
-                evolution_msg_id: result.key?.id || null,
-              })
-              .eq('id', message.id);
-
-            sentCount++;
-            console.log(`Message ${message.id} marked as sent`);
-          } else {
-            throw new Error('Nenhum arquivo para enviar');
           }
-        } catch (error: any) {
-          console.error(`Failed to send message ${message.id}:`, error);
-          const errorMessage = error.message || 'Erro desconhecido';
-          await supabase
-            .from('messages')
-            .update({ status: 'failed', error_message: errorMessage })
-            .eq('id', message.id);
-          failedCount++;
-          console.log(`Message ${message.id} marked as failed: ${errorMessage}`);
+          console.log(`✅ Fila inteira processada em background.`);
+        } catch (bgError) {
+          console.error("Erro critico no background job: ", bgError);
         }
-
-        // Delay between messages (anti-ban)
-        if (i < batch.length - 1) {
-          const delay = Math.random() * (config.delay_max - config.delay_min) + config.delay_min;
-          console.log(`Waiting ${delay}ms before next message`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-      }
-
-      const processed = batch.length;
-      const moreRemaining = allFilteredMessages.length > batch.length;
-      console.log(`📊 Lote concluído: processed=${processed}, sent=${sentCount}, failed=${failedCount}, moreRemaining=${moreRemaining}`);
+      })());
 
       return new Response(
-        JSON.stringify({ success: true, processed, sent: sentCount, failed: failedCount, moreRemaining }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ success: true, message: 'Processamento em massa iniciado em background.', count: allFilteredMessages.length }),
+        { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
-
-      // Batch-based processing completed above. Returning early.
-      // (Retry automático removido para evitar timeouts.)
     }
 
     throw new Error('Ação inválida');

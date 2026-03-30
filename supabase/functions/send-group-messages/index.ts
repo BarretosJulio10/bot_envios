@@ -29,14 +29,20 @@ serve(async (req) => {
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config) throw new Error('Configuração Evolution não encontrada');
+    if (configError || !config) throw new Error('Configuração Evolution (Tabela) não encontrada');
 
-    const evolutionUrl = config.base_url;
-    const evolutionToken = config.token;
+    // STRICTLY mirror 'send-messages/index.ts' logic:
+    // Read Credentials from Env Vars, Instance ID from DB.
+    const evolutionUrl = Deno.env.get('EVOLUTION_API_URL');
+    const evolutionToken = Deno.env.get('global_apikay');
+    const instanceId = config.instance_id?.trim();
 
-    if (!evolutionUrl || !evolutionToken) {
-      throw new Error('Variáveis de ambiente Evolution não configuradas');
-    }
+    if (!evolutionUrl) throw new Error('EVOLUTION_API_URL não definida nas Variáveis de Ambiente');
+    if (!evolutionToken) throw new Error('global_apikay não definida nas Variáveis de Ambiente');
+    if (!instanceId) throw new Error('Instance ID não configurado na tabela evolution_config');
+    if (!instanceId) throw new Error('Instance ID não configurado no Banco de Dados');
+
+    console.log(`Config loaded: URL=${evolutionUrl ? 'OK' : 'MISSING'}, Token=${evolutionToken ? 'OK' : 'MISSING'}, Instance=${instanceId}`);
 
     const mimeTypes: Record<string, string> = {
       'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'webp': 'image/webp',
@@ -146,19 +152,17 @@ serve(async (req) => {
         const mimetype = mimeTypes[ext] || 'application/octet-stream';
 
         if (mediaType === 'sticker') {
+          console.log(`Processing sticker for ${message.group_id} using URL: ${signedUrl}`);
           endpoint = `${evolutionUrl}/message/sendSticker/${config.instance_id}`;
-          const imageResponse = await fetch(signedUrl);
-          if (!imageResponse.ok) throw new Error(`Failed to fetch sticker image`);
-          const arrayBuffer = await imageResponse.arrayBuffer();
-          const bytes = new Uint8Array(arrayBuffer);
-          let binary = '';
-          const chunkSize = 8192;
-          for (let j = 0; j < bytes.length; j += chunkSize) {
-            const chunk = bytes.subarray(j, Math.min(j + chunkSize, bytes.length));
-            binary += String.fromCharCode.apply(null, Array.from(chunk));
-          }
-          const base64 = btoa(binary);
-          payload = { number: message.group_id, sticker: base64, delay: 1200, presence: 'composing' };
+
+          // Evolution V2 usually accepts URL in 'sticker' field
+          payload = {
+            number: message.group_id,
+            sticker: signedUrl,
+            delay: 1200,
+            presence: 'composing'
+          };
+          console.log('Sticker payload prepared with URL');
         } else {
           endpoint = `${evolutionUrl}/message/sendMedia/${config.instance_id}`;
           payload = {
