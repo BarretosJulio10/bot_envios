@@ -1,5 +1,14 @@
-// TODO: Edge Function para criar instância automaticamente na Evolution API
-// Fluxo: recebe base_url e token -> cria instância -> retorna QR code base64
+/**
+ * Edge Function: evolution-create-instance (Uazapi 2.0.1)
+ * 
+ * Fluxo:
+ * 1. Recebe instance_name do frontend
+ * 2. Cria instância via POST /instance/create (admintoken)
+ * 3. Captura o token retornado pela Uazapi
+ * 4. Conecta via POST /instance/connect (token) → gera QR Code
+ * 5. Salva config no banco (token, qrcode, status)
+ * 6. Retorna QR Code para o frontend exibir
+ */
 
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -9,49 +18,50 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-serve(async (req) => {
-  // TODO: Tratar requisições OPTIONS (CORS preflight)
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // TODO: Inicializar cliente Supabase para autenticação e acesso ao banco
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
-    
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) throw new Error('No authorization header');
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    );
 
-    const token = authHeader.replace('Bearer ', '');
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !user) throw new Error('Unauthorized');
+    // Autenticar usuário
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) throw new Error('Sem header de autorização');
+
+    const jwt = authHeader.replace('Bearer ', '');
+    const { data: { user }, error: userError } = await supabase.auth.getUser(jwt);
+    if (userError || !user) throw new Error('Não autorizado');
 
     const { instance_name } = await req.json();
+    if (!instance_name) throw new Error('instance_name é obrigatório');
 
-    if (!instance_name) {
-      throw new Error('instance_name é obrigatório');
+    // Credenciais do servidor Uazapi (configuradas nos Supabase Secrets)
+    const uazapiUrl = Deno.env.get('EVOLUTION_API_URL');   // ex: https://api.uazapi.com
+    const adminToken = Deno.env.get('global_apikay');       // admintoken da Uazapi
+
+    if (!uazapiUrl || !adminToken) {
+      throw new Error('EVOLUTION_API_URL ou global_apikay não configurados nos Secrets');
     }
 
-    // TODO: Buscar base_url e token dos secrets do Supabase
-    const base_url = Deno.env.get('EVOLUTION_API_URL');
-    const global_apikey = Deno.env.get('global_apikay');
-    
-    if (!base_url || !global_apikey) {
-      throw new Error('Configuração da Evolution API não encontrada nos secrets');
-    }
+    console.log(`[create-instance] Criando instância: ${instance_name} para usuário: ${user.id}`);
 
-    console.log(`Creating instance: ${instance_name} for user: ${user.id}`);
-
-
-    // TODO: Fazer requisição POST para Evolution API para criar instância
-    // Rota oficial: POST /instance/create
-    const createResponse = await fetch(`${base_url}/instance/create`, {
+    // ───────────────────────────────────────────────
+    // PASSO 1: Criar a instância (usa admintoken)
+    // POST /instance/create
+    // Header: admintoken
+    // Body: { name: string, systemName?: string }
+    // Response: { token: string, instance: { qrcode, paircode, status, ... }, ... }
+    // ───────────────────────────────────────────────
+    const createRes = await fetch(`${uazapiUrl}/instance/create`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'admintoken': global_apikey, // Uazapi usa admintoken para criação
+        'admintoken': adminToken,
       },
       body: JSON.stringify({
         name: instance_name,
@@ -59,93 +69,90 @@ serve(async (req) => {
       }),
     });
 
-    if (!createResponse.ok) {
-      const errorText = await createResponse.text();
-      throw new Error(`Erro ao criar instância: ${createResponse.status} - ${errorText}`);
+    const createBody = await createRes.text();
+    console.log(`[create-instance] Resposta do create: ${createRes.status} ${createBody}`);
+
+    if (!createRes.ok) {
+      throw new Error(`Erro ao criar instância (${createRes.status}): ${createBody}`);
     }
 
-    const createResult = await createResponse.json();
-    console.log('Instance creation response:', createResult);
+    const createData = JSON.parse(createBody);
 
-    // O Uazapi retorna o token no campo 'token' do objeto principal ou dentro de 'instance'
-    const instance_token = createResult.token || createResult.instance?.token;
-
-    if (!instance_token) {
-      throw new Error('Token da instância não retornado pela Uazapi');
+    // O token da instância é retornado diretamente no campo 'token'
+    const instanceToken = createData.token;
+    if (!instanceToken) {
+      throw new Error(`Token não retornado pela Uazapi. Resposta: ${createBody}`);
     }
 
-    console.log('Instance token obtained:', instance_token);
+    console.log(`[create-instance] Token da instância obtido: ${instanceToken.substring(0, 8)}...`);
 
-    // Uazapi
-    // Rota /instance/connect usando o token da instancia no header ou parametros
-    const connectResponse = await fetch(
-      `${base_url}/instance/connect`,
-      {
-        method: 'POST', // Uazapi usa POST para conexão
-        headers: {
-          'token': instance_token,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({}), // Corpo vazio para gerar QR Code
-      }
-    );
+    // ───────────────────────────────────────────────
+    // PASSO 2: Conectar a instância para gerar QR Code
+    // POST /instance/connect
+    // Header: token (token da instância, NÃO o admintoken)
+    // Body: {} (sem phone = gera QR Code; com phone = gera pairing code)
+    // Response: { connected, loggedIn, jid, instance: { qrcode, paircode, status } }
+    // ───────────────────────────────────────────────
+    const connectRes = await fetch(`${uazapiUrl}/instance/connect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'token': instanceToken,
+      },
+      body: JSON.stringify({}),
+    });
 
-    if (!connectResponse.ok) {
-      const errorText = await connectResponse.text();
-      throw new Error(`Erro ao obter QR code: ${connectResponse.status} - ${errorText}`);
+    const connectBody = await connectRes.text();
+    console.log(`[create-instance] Resposta do connect: ${connectRes.status} ${connectBody.substring(0, 200)}`);
+
+    if (!connectRes.ok) {
+      throw new Error(`Erro ao conectar instância (${connectRes.status}): ${connectBody}`);
     }
 
-    const connectResult = await connectResponse.json();
-    console.log('QR code obtained');
+    const connectData = JSON.parse(connectBody);
 
-    // TODO: Extrair QR code base64 da resposta
-    // O QR code vem no campo "base64" já com o prefixo data:image/png;base64,
-    const qrCodeBase64 = connectResult.base64;
-    const pairingCode = connectResult.pairingCode;
+    // QR Code e pairing code estão dentro de 'instance'
+    const qrCode   = connectData.instance?.qrcode   ?? connectData.qrcode   ?? null;
+    const pairingCode = connectData.instance?.paircode ?? connectData.paircode ?? null;
 
-    // TODO: Salvar configuração no banco com QR code e status "connecting"
-    const { error: configError } = await supabase
+    // ───────────────────────────────────────────────
+    // PASSO 3: Salvar configuração no banco de dados
+    // ───────────────────────────────────────────────
+    const { error: dbError } = await supabase
       .from('evolution_config')
       .upsert({
         user_id: user.id,
-        base_url,
+        base_url: uazapiUrl,
         instance_id: instance_name,
-        token: instance_token,
+        token: instanceToken,       // Token da instância (necessário para envios)
         instance_created: true,
-        qr_code: qrCodeBase64,
+        qr_code: qrCode,
         connection_status: 'connecting',
-      }, {
-        onConflict: 'user_id',
-      });
+      }, { onConflict: 'user_id' });
 
-    if (configError) {
-      console.error('Error saving config:', configError);
-      throw new Error('Erro ao salvar configuração');
+    if (dbError) {
+      console.error('[create-instance] Erro ao salvar config:', dbError);
+      throw new Error('Erro ao salvar configuração no banco');
     }
 
-    // TODO: Retornar sucesso com QR code base64 e pairing code
     return new Response(
       JSON.stringify({
         success: true,
-        qrCode: qrCodeBase64,
+        qrCode,
         pairingCode,
         instanceName: instance_name,
-        message: 'Instância criada com sucesso! Escaneie o QR code.',
+        message: qrCode
+          ? 'Instância criada! Escaneie o QR Code com seu WhatsApp.'
+          : 'Instância criada. Aguardando QR Code...',
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error: any) {
-    console.error('Error in evolution-create-instance:', error);
+    console.error('[create-instance] Erro:', error.message);
     return new Response(
-      JSON.stringify({ 
-        success: false,
-        error: error.message 
-      }),
-      { 
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
+      JSON.stringify({ success: false, error: error.message }),
+      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });

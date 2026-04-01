@@ -1,5 +1,17 @@
-// TODO: Edge Function para verificar status da instância Evolution
-// Usado para detectar quando o QR code foi escaneado e fechar o modal automaticamente
+/**
+ * Edge Function: evolution-status (Uazapi 2.0.1)
+ * 
+ * Endpoint Uazapi: GET /instance/status
+ * Header: token (token da instância, não admintoken)
+ * 
+ * Response: {
+ *   instance: { status, qrcode, paircode, name, profileName, ... },
+ *   status: { connected: bool, loggedIn: bool, jid: ... }
+ * }
+ * 
+ * Esta função faz polling para verificar se o QR Code foi escaneado.
+ * Retorna { connected: true } quando a instância estiver online.
+ */
 
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -9,122 +21,102 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-serve(async (req) => {
-  // TODO: Tratar requisições OPTIONS
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // TODO: Autenticar usuário
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
+    // Autenticar usuário
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) throw new Error('No authorization header');
+    if (!authHeader) throw new Error('Sem header de autorização');
 
-    const token = authHeader.replace('Bearer ', '');
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !user) throw new Error('Unauthorized');
+    const jwt = authHeader.replace('Bearer ', '');
+    const { data: { user }, error: userError } = await supabase.auth.getUser(jwt);
+    if (userError || !user) throw new Error('Não autorizado');
 
-    // TODO: Buscar configuração do usuário (apenas instance_id)
+    // Buscar config do banco (inclui token da instância)
     const { data: config, error: configError } = await supabase
       .from('evolution_config')
-      .select('instance_id, token')
+      .select('instance_id, token, base_url, connection_status')
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config?.instance_id) {
-      throw new Error('Configuração não encontrada');
+    if (configError || !config) {
+      throw new Error('Configuração Uazapi não encontrada. Configure sua instância primeiro.');
     }
 
-    // TODO: Buscar credenciais dos secrets
-    const base_url = Deno.env.get('EVOLUTION_API_URL');
-    const global_apikey = Deno.env.get('global_apikay');
-    
-    if (!base_url || !global_apikey) {
-      throw new Error('Configuração da Evolution API não encontrada nos secrets');
+    if (!config.token) {
+      throw new Error('Token da instância não encontrado. Reconecte a instância.');
     }
 
-    console.log(`Checking status for instance: ${config.instance_id}`);
+    const uazapiUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
+    if (!uazapiUrl) throw new Error('URL da Uazapi não configurada');
 
-    // TODO: Fazer requisição GET para verificar estado da conexão
-    // Uazapi
-    // Rota oficial: GET /instance/status
-    const response = await fetch(
-      `${base_url}/instance/status`,
-      {
-        method: 'GET',
-        headers: {
-          'token': config.token || global_apikey,
-          'Content-Type': 'application/json',
-        }
-      }
-    );
+    console.log(`[evolution-status] Verificando status de: ${config.instance_id}`);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Erro ao verificar status: ${response.status} - ${errorText}`);
+    // ───────────────────────────────────────────────
+    // GET /instance/status
+    // Header: token (token da instância)
+    // Response: { status: { connected, loggedIn, jid }, instance: { status, qrcode, paircode } }
+    // ───────────────────────────────────────────────
+    const statusRes = await fetch(`${uazapiUrl}/instance/status`, {
+      method: 'GET',
+      headers: {
+        'token': config.token,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const statusBody = await statusRes.text();
+    console.log(`[evolution-status] Resposta: ${statusRes.status} ${statusBody.substring(0, 300)}`);
+
+    if (!statusRes.ok) {
+      throw new Error(`Erro ao verificar status (${statusRes.status}): ${statusBody}`);
     }
 
-    const result = await response.json();
-    console.log('Connection state:', result);
+    const statusData = JSON.parse(statusBody);
 
-    // TODO: Extrair estado da resposta
-    // Estados possíveis: "open" (conectado), "close" (desconectado), "connecting"
-    const state = result?.instance?.state || 'disconnected';
-    const isConnected = state === 'open';
+    const isConnected = statusData.status?.connected === true;
+    const instanceStatus = statusData.instance?.status ?? 'unknown';
+    const qrCode = statusData.instance?.qrcode ?? null;
+    const pairingCode = statusData.instance?.paircode ?? null;
 
-    // TODO: Atualizar status no banco de dados
-    let newStatus = 'disconnected';
-    if (isConnected) {
-      newStatus = 'connected';
-    } else if (state === 'connecting') {
-      newStatus = 'connecting';
+    // Atualizar status no banco se mudou
+    if (isConnected && config.connection_status !== 'open') {
+      await supabase
+        .from('evolution_config')
+        .update({ connection_status: 'open' })
+        .eq('user_id', user.id);
+    } else if (!isConnected && qrCode && config.connection_status !== 'connecting') {
+      await supabase
+        .from('evolution_config')
+        .update({ connection_status: 'connecting', qr_code: qrCode })
+        .eq('user_id', user.id);
     }
 
-    // TODO: Limpar QR code do banco quando conectar (não precisa mais)
-    const updateData: any = {
-      connection_status: newStatus,
-    };
-
-    if (isConnected) {
-      updateData.qr_code = null; // Limpar QR code após conexão bem-sucedida
-    }
-
-    await supabase
-      .from('evolution_config')
-      .update(updateData)
-      .eq('user_id', user.id);
-
-    // TODO: Retornar status atualizado
     return new Response(
       JSON.stringify({
         success: true,
         connected: isConnected,
-        status: newStatus,
-        state,
-        message: isConnected 
-          ? 'WhatsApp conectado com sucesso!' 
-          : `Status: ${state}`,
+        instanceStatus,
+        qrCode,
+        pairingCode,
+        data: statusData,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error: any) {
-    console.error('Error in evolution-status:', error);
+    console.error('[evolution-status] Erro:', error.message);
     return new Response(
-      JSON.stringify({ 
-        success: false,
-        connected: false,
-        error: error.message 
-      }),
-      { 
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
+      JSON.stringify({ success: false, message: error.message }),
+      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
