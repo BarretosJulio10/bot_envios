@@ -44,15 +44,17 @@ Deno.serve(async (req) => {
       throw new Error('Variáveis de ambiente Evolution não configuradas');
     }
 
+    const apiToken = config.api_key || evolutionToken;
+
     console.log(`Fetching groups from ${evolutionUrl}/group/list`);
 
-    // Buscar grupos do WhatsApp
+    // Buscar grupos do WhatsApp (Uazapi)
     const response = await fetch(
       `${evolutionUrl}/group/list`,
       {
         method: 'GET',
         headers: {
-          'token': config.api_key || evolutionToken,
+          'token': config.token || evolutionToken,
           'Content-Type': 'application/json',
         },
       }
@@ -60,21 +62,26 @@ Deno.serve(async (req) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Evolution API error:', errorText);
+      console.error('Uazapi API error:', errorText);
       throw new Error(`Erro ao buscar grupos: ${response.status}`);
     }
 
-    const groups = await response.json();
-    console.log(`Found ${groups.length} groups`);
+    const result = await response.json();
+    // Uazapi envelopa no campo "groups"
+    const groupsRaw = Array.isArray(result) ? result : (result.groups || []);
+    
+    console.log(`Found ${groupsRaw.length} groups raw`);
+
+    const formattedGroups = groupsRaw.map((g: any) => ({
+      id: g.JID || g.id,
+      name: g.Name || g.subject || 'Sem nome',
+      participants: g.Participants?.length || 0,
+    }));
 
     return new Response(
       JSON.stringify({
         success: true,
-        groups: groups.map((g: any) => ({
-          id: g.id,
-          name: g.subject || 'Sem nome',
-          participants: g.participants?.length || 0,
-        })),
+        groups: formattedGroups,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

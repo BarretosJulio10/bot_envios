@@ -58,7 +58,8 @@ serve(async (req) => {
       {
         method: 'GET',
         headers: {
-          'token': config.api_key || global_apikey || '',
+          'token': config.token || global_apikey,
+          'Content-Type': 'application/json',
         }
       }
     );

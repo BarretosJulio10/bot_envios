@@ -186,7 +186,7 @@ serve(async (req) => {
                   method: 'POST',
                   headers: { 
                     'Content-Type': 'application/json', 
-                    'token': config.api_key || evolutionApiKey 
+                    'token': config.token || evolutionApiKey 
                   },
                   body: JSON.stringify(payload),
                 });

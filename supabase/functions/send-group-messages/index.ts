@@ -39,7 +39,7 @@ serve(async (req) => {
     if (!uazapiToken) throw new Error('global_apikay nao definida');
     if (!instanceId) throw new Error('Instance ID nao configurado');
 
-    const apiToken = config.api_key || uazapiToken;
+    const apiToken = config.token || uazapiToken;
 
     // Funcao para envio via Uazapi com retry automatico
     async function sendToUazapi(endpoint: string, payload: any, retry = true): Promise<any> {

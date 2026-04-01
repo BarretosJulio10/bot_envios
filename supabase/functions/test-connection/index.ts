@@ -57,7 +57,7 @@ serve(async (req) => {
       {
         method: 'GET',
         headers: {
-          'token': config.api_key || Deno.env.get('global_apikay') || '',
+          'token': config.token || global_apikey,
           'Content-Type': 'application/json'
         }
       }
