@@ -20,8 +20,7 @@ serve(async (req) => {
     const { data: { user }, error: userError } = await supabaseClient.auth.getUser(
       req.headers.get('Authorization')?.split(' ')[1] ?? ''
     );
-
-    if (userError || !user) throw new Error('Não autorizado');
+    if (userError || !user) throw new Error('Nao autorizado');
 
     const { data: config, error: configError } = await supabaseClient
       .from('evolution_config')
@@ -29,43 +28,25 @@ serve(async (req) => {
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config) throw new Error('Configuração Evolution (Tabela) não encontrada');
+    if (configError || !config) throw new Error('Configuracao nao encontrada');
 
-    // STRICTLY mirror 'send-messages/index.ts' logic:
-    // Read Credentials from Env Vars, Instance ID from DB.
-    const evolutionUrl = Deno.env.get('EVOLUTION_API_URL');
-    const evolutionToken = Deno.env.get('global_apikay');
+    // Credenciais Uazapi
+    const uazapiUrl = Deno.env.get('EVOLUTION_API_URL');
+    const uazapiToken = Deno.env.get('global_apikay');
     const instanceId = config.instance_id?.trim();
 
-    if (!evolutionUrl) throw new Error('EVOLUTION_API_URL não definida nas Variáveis de Ambiente');
-    if (!evolutionToken) throw new Error('global_apikay não definida nas Variáveis de Ambiente');
-    if (!instanceId) throw new Error('Instance ID não configurado na tabela evolution_config');
-    if (!instanceId) throw new Error('Instance ID não configurado no Banco de Dados');
+    if (!uazapiUrl) throw new Error('EVOLUTION_API_URL nao definida');
+    if (!uazapiToken) throw new Error('global_apikay nao definida');
+    if (!instanceId) throw new Error('Instance ID nao configurado');
 
-    console.log(`Config loaded: URL=${evolutionUrl ? 'OK' : 'MISSING'}, Token=${evolutionToken ? 'OK' : 'MISSING'}, Instance=${instanceId}`);
+    const apiToken = config.api_key || uazapiToken;
 
-    const mimeTypes: Record<string, string> = {
-      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'webp': 'image/webp',
-      'gif': 'image/gif', 'bmp': 'image/bmp', 'tiff': 'image/tiff', 'svg': 'image/svg+xml',
-      'mp4': 'video/mp4', 'mov': 'video/quicktime', 'webm': 'video/webm', 'm4v': 'video/x-m4v',
-      'avi': 'video/x-msvideo', '3gp': 'video/3gpp', 'mkv': 'video/x-matroska',
-      'mp3': 'audio/mpeg', 'm4a': 'audio/mp4', 'wav': 'audio/wav', 'ogg': 'audio/ogg',
-      'aac': 'audio/aac', 'flac': 'audio/flac', 'opus': 'audio/opus',
-      'pdf': 'application/pdf', 'doc': 'application/msword',
-      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'xls': 'application/vnd.ms-excel',
-      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'ppt': 'application/vnd.ms-powerpoint',
-      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'txt': 'text/plain', 'zip': 'application/zip', 'rar': 'application/vnd.rar',
-      '7z': 'application/x-7z-compressed', 'csv': 'text/csv'
-    };
-
-    async function sendToEvolution(endpoint: string, payload: any, retry = true): Promise<any> {
+    // Funcao para envio via Uazapi com retry automatico
+    async function sendToUazapi(endpoint: string, payload: any, retry = true): Promise<any> {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'token': config.api_key || evolutionToken,
+          'token': apiToken,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
@@ -82,19 +63,21 @@ serve(async (req) => {
       if (!response.ok) {
         if (retry && responseText.includes('No sessions')) {
           console.warn('No sessions. Reconnecting...');
-          await ensureInstanceSession(config.instance_id);
+          await ensureInstanceSession();
           await new Promise(r => setTimeout(r, 1000));
-          return sendToEvolution(endpoint, payload, false);
+          return sendToUazapi(endpoint, payload, false);
         }
-        throw new Error(`Evolution API ${response.status}: ${responseText}`);
+        throw new Error(`Uazapi API ${response.status}: ${responseText}`);
       }
       return result;
     }
 
+    // Verifica e reconecta instancia na Uazapi
+    async function ensureInstanceSession() {
       try {
-        const stateRes = await fetch(`${evolutionUrl}/instance/status`, {
+        const stateRes = await fetch(`${uazapiUrl}/instance/status`, {
           method: 'GET',
-          headers: { 'token': config.api_key || evolutionToken },
+          headers: { 'token': apiToken },
         });
         if (stateRes.ok) {
           const stateJson = await stateRes.json();
@@ -102,17 +85,17 @@ serve(async (req) => {
           if (state === 'open') return true;
         }
 
-        console.log(`Instance ${instanceId} not open or unknown. Trying reconnect...`);
-        const connectRes = await fetch(`${evolutionUrl}/instance/connect`, {
+        console.log('Instance not open. Trying reconnect...');
+        const connectRes = await fetch(`${uazapiUrl}/instance/connect`, {
           method: 'GET',
-          headers: { 'token': config.api_key || evolutionToken },
+          headers: { 'token': apiToken },
         });
         if (!connectRes.ok) {
           const txt = await connectRes.text();
           console.warn(`Reconnect failed (${connectRes.status}): ${txt}`);
           return false;
         }
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 1500));
         return true;
       } catch (e) {
         console.warn('ensureInstanceSession error:', e);
@@ -120,13 +103,14 @@ serve(async (req) => {
       }
     }
 
+    // Processa cada mensagem individual do lote
     async function processMessage(message: any) {
       let payload: any = {};
       let endpoint = '';
 
       if (message.image_url) {
         const urlParts = message.image_url.split('/whatsapp-files/');
-        if (urlParts.length < 2) throw new Error('Caminho do arquivo inválido na URL');
+        if (urlParts.length < 2) throw new Error('Caminho do arquivo invalido na URL');
         const filePath = urlParts[1];
 
         const { data: signedData, error: signedError } = await supabaseClient
@@ -141,30 +125,23 @@ serve(async (req) => {
         const ext = filename.split('.').pop()?.toLowerCase() || '';
         let mediaType = 'document';
 
-        if (message.file_type === 'document') mediaType = 'document';
-        else if (message.file_type === 'sticker') mediaType = 'sticker';
+        if (message.file_type === 'sticker') mediaType = 'sticker';
         else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
-        else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg'].includes(ext)) mediaType = 'video';
-        else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
-        else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
+        else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv'].includes(ext)) mediaType = 'video';
+        else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'opus'].includes(ext)) mediaType = 'audio';
 
-        const mimetype = mimeTypes[ext] || 'application/octet-stream';
+        endpoint = `${uazapiUrl}/send/media`;
 
         if (mediaType === 'sticker') {
-          console.log(`Processing sticker for ${message.group_id} using URL: ${signedUrl}`);
-          endpoint = `${evolutionUrl}/send/media`;
-
-          // Uazapi
+          // Uazapi: sticker via /send/media com type sticker
           payload = {
             number: message.group_id,
             type: 'sticker',
             file: signedUrl,
             delay: 1200,
-            presence: 'composing'
           };
-          console.log('Sticker payload prepared with URL');
         } else {
-          endpoint = `${evolutionUrl}/send/media`;
+          // Uazapi usa 'text' para legenda (nao 'caption')
           payload = {
             number: message.group_id,
             type: mediaType,
@@ -175,16 +152,16 @@ serve(async (req) => {
           };
         }
       } else if (message.caption) {
-        endpoint = `${evolutionUrl}/send/text`;
+        endpoint = `${uazapiUrl}/send/text`;
         payload = { number: message.group_id, text: message.caption, delay: 1200 };
       }
 
       if (endpoint) {
-        await sendToEvolution(endpoint, payload);
+        await sendToUazapi(endpoint, payload);
       }
     }
 
-    // Main fetch with ordering_index support
+    // Busca mensagens na fila
     const { data: allMessages, error: messagesError } = await supabaseClient
       .from('group_messages')
       .select('*')
@@ -195,12 +172,17 @@ serve(async (req) => {
 
     if (messagesError) throw messagesError;
     if (!allMessages || allMessages.length === 0) {
-      return new Response(JSON.stringify({ success: true, message: 'Fila vazia' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(
+        JSON.stringify({ success: true, message: 'Fila vazia' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
+    // Processa em background para nao causar timeout na requisicao do painel
+    // @ts-ignore - EdgeRuntime injetado pelo Supabase/Deno
     EdgeRuntime.waitUntil((async () => {
       try {
-        await ensureInstanceSession(config.instance_id);
+        await ensureInstanceSession();
         const batchSize = config.pause_after || 5;
 
         for (let i = 0; i < allMessages.length; i += batchSize) {
@@ -221,11 +203,18 @@ serve(async (req) => {
           }
         }
 
-        // Retry logic
+        // Retry para falhas (ate 3 ciclos)
         let retryCycle = 0;
         while (retryCycle < 3) {
-          const { data: failed } = await supabaseClient.from('group_messages').select('*').eq('user_id', user.id).eq('status', 'failed').lt('attempts', 5);
+          const { data: failed } = await supabaseClient
+            .from('group_messages')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('status', 'failed')
+            .lt('attempts', 5);
+
           if (!failed || failed.length === 0) break;
+
           for (const msg of failed) {
             try {
               await supabaseClient.from('group_messages').update({ status: 'sending', attempts: msg.attempts + 1 }).eq('id', msg.id);
@@ -244,10 +233,16 @@ serve(async (req) => {
       }
     })());
 
-    return new Response(JSON.stringify({ success: true, message: 'Processamento iniciado', count: allMessages.length }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 });
+    return new Response(
+      JSON.stringify({ success: true, message: 'Processamento iniciado', count: allMessages.length }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 }
+    );
 
   } catch (error: any) {
     console.error('Error:', error);
-    return new Response(JSON.stringify({ success: false, error: error.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 });
+    return new Response(
+      JSON.stringify({ success: false, error: error.message }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+    );
   }
 });
