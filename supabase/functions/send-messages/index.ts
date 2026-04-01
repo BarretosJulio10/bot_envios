@@ -1,4 +1,3 @@
-import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -6,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   // Handle CORS
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -50,8 +49,14 @@ serve(async (req) => {
       .single();
 
     if (configError || !config || !config.instance_id) {
-      throw new Error('Configuração da Evolution API não encontrada');
+      throw new Error('Configuração da Uazapi não encontrada. Conecte sua instância primeiro.');
     }
+
+    // Token da instância — obrigatório para envios (NÃO usar o admintoken)
+    if (!config.token) {
+      throw new Error('Token da instância não encontrado. Reconecte sua instância Uazapi no painel de configuração.');
+    }
+    const instanceToken = config.token;
 
     if (action === 'pause') {
       // Pause all sending messages
@@ -186,7 +191,7 @@ serve(async (req) => {
                   method: 'POST',
                   headers: { 
                     'Content-Type': 'application/json', 
-                    'token': config.token || evolutionApiKey 
+                    'token': instanceToken,  // Token da instância — obrigatório
                   },
                   body: JSON.stringify(payload),
                 });

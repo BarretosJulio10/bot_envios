@@ -1,4 +1,3 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -6,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
@@ -39,7 +38,11 @@ serve(async (req) => {
     if (!uazapiToken) throw new Error('global_apikay nao definida');
     if (!instanceId) throw new Error('Instance ID nao configurado');
 
-    const apiToken = config.token || uazapiToken;
+    // Token da instância — OBRIGATÓRIO. NÃO usar admintoken (global_apikay) para envios!
+    if (!config.token) {
+      throw new Error('Token da instância não encontrado no banco. Reconecte sua instância Uazapi no painel.');
+    }
+    const apiToken = config.token;
 
     // Funcao para envio via Uazapi com retry automatico
     async function sendToUazapi(endpoint: string, payload: any, retry = true): Promise<any> {
