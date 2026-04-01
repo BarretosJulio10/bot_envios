@@ -333,7 +333,7 @@ export default function IndividualSender() {
                     className="gap-2"
                 >
                     <Send className="h-4 w-4" />
-                    Iniciar Envio
+                    Conectar Uazapi
                 </Button>
                 <Button
                     onClick={pauseSending}

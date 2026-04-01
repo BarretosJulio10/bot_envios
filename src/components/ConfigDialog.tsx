@@ -125,7 +125,7 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
     }
   };
 
-  // TODO: Criar instância na Evolution API usando os secrets
+  // TODO: Criar instância na Uazapi usando os secrets
   const handleCreateInstance = async () => {
     if (!instanceName) {
       toast.error("Informe o nome da instância");
@@ -199,7 +199,7 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
     }
   };
 
-  // TODO: Testar conexão com a Evolution API
+  // TODO: Testar conexão com a Uazapi
   const handleTestConnection = async () => {
     setLoading(true);
     try {
@@ -224,7 +224,7 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
       <DialogContent className="sm:max-w-[500px] bg-card border-border/50">
         <DialogHeader>
           <DialogTitle>
-            {step === "form" && "Configuração Evolution API"}
+            {step === "form" && "Configuração Uazapi"}
             {step === "qrcode" && "Escaneie o QR Code"}
             {step === "connected" && "Conectado!"}
           </DialogTitle>

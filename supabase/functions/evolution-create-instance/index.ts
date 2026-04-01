@@ -44,8 +44,6 @@ serve(async (req) => {
 
     console.log(`Creating instance: ${instance_name} for user: ${user.id}`);
 
-    // TODO: Gerar token único para a instância
-    const instance_token = crypto.randomUUID();
 
     // TODO: Fazer requisição POST para Evolution API para criar instância
     // Rota oficial: POST /instance/create
@@ -56,10 +54,8 @@ serve(async (req) => {
         'admintoken': global_apikey, // Uazapi usa admintoken para criação
       },
       body: JSON.stringify({
-        instanceName: instance_name,
-        token: instance_token,
-        qrcode: true, // Solicitar retorno do QR code
-        integration: 'WHATSAPP-BAILEYS',
+        name: instance_name,
+        systemName: 'uazapiGO',
       }),
     });
 
@@ -69,7 +65,16 @@ serve(async (req) => {
     }
 
     const createResult = await createResponse.json();
-    console.log('Instance created:', createResult);
+    console.log('Instance creation response:', createResult);
+
+    // O Uazapi retorna o token no campo 'token' do objeto principal ou dentro de 'instance'
+    const instance_token = createResult.token || createResult.instance?.token;
+
+    if (!instance_token) {
+      throw new Error('Token da instância não retornado pela Uazapi');
+    }
+
+    console.log('Instance token obtained:', instance_token);
 
     // Uazapi
     // Rota /instance/connect usando o token da instancia no header ou parametros
