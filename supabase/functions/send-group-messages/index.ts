@@ -87,8 +87,12 @@ serve(async (req) => {
 
         console.log('Instance not open. Trying reconnect...');
         const connectRes = await fetch(`${uazapiUrl}/instance/connect`, {
-          method: 'GET',
-          headers: { 'token': apiToken },
+          method: 'POST',
+          headers: { 
+            'token': apiToken,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({}),
         });
         if (!connectRes.ok) {
           const txt = await connectRes.text();

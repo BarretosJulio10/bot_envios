@@ -53,7 +53,7 @@ serve(async (req) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'token': global_apikey, // Uazapi usa token
+        'admintoken': global_apikey, // Uazapi usa admintoken para criação
       },
       body: JSON.stringify({
         instanceName: instance_name,
@@ -76,10 +76,12 @@ serve(async (req) => {
     const connectResponse = await fetch(
       `${base_url}/instance/connect`,
       {
-        method: 'GET',
+        method: 'POST', // Uazapi usa POST para conexão
         headers: {
           'token': instance_token,
+          'Content-Type': 'application/json'
         },
+        body: JSON.stringify({}), // Corpo vazio para gerar QR Code
       }
     );
 

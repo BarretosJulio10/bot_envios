@@ -32,7 +32,7 @@ serve(async (req) => {
     // TODO: Buscar configuração do usuário (apenas instance_id)
     const { data: config, error: configError } = await supabase
       .from('evolution_config')
-      .select('instance_id')
+      .select('instance_id, token')
       .eq('user_id', user.id)
       .single();
 

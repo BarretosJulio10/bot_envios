@@ -39,7 +39,7 @@ serve(async (req) => {
     // TODO: Buscar instance_id do banco
     const { data: config, error: configError } = await supabase
       .from('evolution_config')
-      .select('instance_id')
+      .select('instance_id, token')
       .eq('user_id', user.id)
       .single();
 
