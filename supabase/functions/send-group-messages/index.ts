@@ -65,7 +65,7 @@ serve(async (req) => {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'apikey': evolutionToken,
+          'token': config.api_key || evolutionToken,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
@@ -91,11 +91,10 @@ serve(async (req) => {
       return result;
     }
 
-    async function ensureInstanceSession(instanceId: string) {
       try {
-        const stateRes = await fetch(`${evolutionUrl}/instance/connectionState/${instanceId}`, {
+        const stateRes = await fetch(`${evolutionUrl}/instance/status`, {
           method: 'GET',
-          headers: { 'apikey': evolutionToken },
+          headers: { 'token': config.api_key || evolutionToken },
         });
         if (stateRes.ok) {
           const stateJson = await stateRes.json();
@@ -104,9 +103,9 @@ serve(async (req) => {
         }
 
         console.log(`Instance ${instanceId} not open or unknown. Trying reconnect...`);
-        const connectRes = await fetch(`${evolutionUrl}/instance/connect/${instanceId}`, {
+        const connectRes = await fetch(`${evolutionUrl}/instance/connect`, {
           method: 'GET',
-          headers: { 'apikey': evolutionToken },
+          headers: { 'token': config.api_key || evolutionToken },
         });
         if (!connectRes.ok) {
           const txt = await connectRes.text();
@@ -153,32 +152,31 @@ serve(async (req) => {
 
         if (mediaType === 'sticker') {
           console.log(`Processing sticker for ${message.group_id} using URL: ${signedUrl}`);
-          endpoint = `${evolutionUrl}/message/sendSticker/${config.instance_id}`;
+          endpoint = `${evolutionUrl}/send/media`;
 
-          // Evolution V2 usually accepts URL in 'sticker' field
+          // Uazapi
           payload = {
             number: message.group_id,
-            sticker: signedUrl,
+            type: 'sticker',
+            file: signedUrl,
             delay: 1200,
             presence: 'composing'
           };
           console.log('Sticker payload prepared with URL');
         } else {
-          endpoint = `${evolutionUrl}/message/sendMedia/${config.instance_id}`;
+          endpoint = `${evolutionUrl}/send/media`;
           payload = {
             number: message.group_id,
-            mediatype: mediaType,
-            mimetype: mimetype,
-            media: signedUrl,
-            fileName: filename,
-            caption: message.caption || '',
+            type: mediaType,
+            file: signedUrl,
+            docName: filename,
+            text: message.caption || '',
             delay: 1200,
-            presence: 'composing'
           };
         }
       } else if (message.caption) {
-        endpoint = `${evolutionUrl}/message/sendText/${config.instance_id}`;
-        payload = { number: message.group_id, text: message.caption, delay: 1200, presence: 'composing' };
+        endpoint = `${evolutionUrl}/send/text`;
+        payload = { number: message.group_id, text: message.caption, delay: 1200 };
       }
 
       if (endpoint) {

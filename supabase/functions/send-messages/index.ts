@@ -168,31 +168,32 @@ serve(async (req) => {
                 else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
                 else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
 
-                let endpoint = `${evolutionApiUrl}/message/sendMedia/${config.instance_id}`;
+                let endpoint = `${evolutionApiUrl}/send/media`;
                 let payload: any = {
                   number: message.phone,
-                  mediatype: mediaType,
-                  media: signedUrl,
-                  fileName: message.filename,
-                  caption: message.message_text || '',
+                  type: mediaType,
+                  file: signedUrl,
+                  docName: message.filename || 'arquivo',
+                  text: message.message_text || '',
                   delay: 1200,
-                  presence: 'composing'
                 };
 
                 if (mediaType === 'sticker') {
-                  endpoint = `${evolutionApiUrl}/message/sendSticker/${config.instance_id}`;
-                  payload = { number: message.phone, sticker: signedUrl };
+                  payload = { number: message.phone, type: 'sticker', file: signedUrl };
                 }
 
                 const response = await fetch(endpoint, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'apikey': evolutionApiKey },
+                  headers: { 
+                    'Content-Type': 'application/json', 
+                    'token': config.api_key || evolutionApiKey 
+                  },
                   body: JSON.stringify(payload),
                 });
                 
                 if (!response.ok) {
                   const errorBody = await response.text();
-                  throw new Error(`Evolution API ${response.status}: ${errorBody}`);
+                  throw new Error(`Uazapi API ${response.status}: ${errorBody}`);
                 }
                 const result = await response.json();
                 await supabase.from('messages').update({ status: 'sent', sent_at: new Date().toISOString(), evolution_msg_id: result.key?.id || null, error_message: null }).eq('id', message.id);

@@ -51,14 +51,15 @@ serve(async (req) => {
     console.log(`Checking status for instance: ${config.instance_id}`);
 
     // TODO: Fazer requisição GET para verificar estado da conexão
-    // Rota oficial: GET /instance/connectionState/{instance}
+    // Uazapi
+    // Rota oficial: GET /instance/status
     const response = await fetch(
-      `${base_url}/instance/connectionState/${config.instance_id}`,
+      `${base_url}/instance/status`,
       {
         method: 'GET',
         headers: {
-          'apikey': global_apikey,
-        },
+          'token': config.api_key || global_apikey || '',
+        }
       }
     );
 

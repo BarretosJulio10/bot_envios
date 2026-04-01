@@ -50,48 +50,43 @@ serve(async (req) => {
     console.log(`Testing connection to ${base_url} for instance ${config.instance_id}`);
 
     // TODO: Testar conexão com Evolution API usando rota correta
-    // Rota oficial: GET /instance/connectionState/{instance}
+    // TEST_CONNECTION - Uazapi Fix
+    // Rota oficial Uazapi: GET /instance/status
     const response = await fetch(
-      `${base_url}/instance/connectionState/${config.instance_id}`,
+      `${base_url}/instance/status`,
       {
         method: 'GET',
         headers: {
-          'apikey': global_apikey,
-        },
+          'token': config.api_key || Deno.env.get('global_apikay') || '',
+          'Content-Type': 'application/json'
+        }
       }
     );
 
-    if (!response.ok) {
+    if (response.ok) {
+      const data = await response.json();
+      const state = data?.state || data?.instance?.state || 'open';
+      const isConnected = state === 'open';
+
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          connected: isConnected,
+          instanceState: state,
+          message: isConnected 
+            ? '✅ Conexão ativa — WhatsApp conectado!' 
+            : `⚠️ Instância encontrada, mas não conectada. Estado: ${state}. Por favor, conecte via QR Code.`
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    } else {
       const errorText = await response.text();
-      console.error('Evolution API error:', response.status, errorText);
-      
-      // TODO: Tratar erro 404 (instância não encontrada) de forma amigável
-      if (response.status === 404) {
-        throw new Error('Instância não encontrada. Verifique o Instance ID.');
-      }
-      
-      throw new Error(`Evolution API error (${response.status}): ${errorText}`);
+      console.error('Uazapi API error:', response.status, errorText);
+      return new Response(
+        JSON.stringify({ success: false, error: errorText, status: response.status }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
-
-    const result = await response.json();
-    console.log('Connection test result:', result);
-
-    // TODO: Verificar estado da instância
-    // Estados possíveis: "open" (conectado), "close" (desconectado)
-    const state = result?.instance?.state;
-    const isConnected = state === 'open';
-    
-    return new Response(
-      JSON.stringify({ 
-        success: true, 
-        connected: isConnected,
-        instanceState: state,
-        message: isConnected 
-          ? '✅ Conexão ativa — WhatsApp conectado!' 
-          : `⚠️ Instância encontrada, mas não conectada. Estado: ${state}. Por favor, conecte via QR Code.`
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
 
   } catch (error: any) {
     console.error('Error in test-connection function:', error);

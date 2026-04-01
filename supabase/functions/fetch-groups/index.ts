@@ -44,15 +44,15 @@ Deno.serve(async (req) => {
       throw new Error('Variáveis de ambiente Evolution não configuradas');
     }
 
-    console.log(`Fetching groups from ${evolutionUrl}/group/fetchAllGroups/${config.instance_id}?getParticipants=true`);
+    console.log(`Fetching groups from ${evolutionUrl}/group/list`);
 
     // Buscar grupos do WhatsApp
     const response = await fetch(
-      `${evolutionUrl}/group/fetchAllGroups/${config.instance_id}?getParticipants=true`,
+      `${evolutionUrl}/group/list`,
       {
         method: 'GET',
         headers: {
-          'apikey': evolutionToken,
+          'token': config.api_key || evolutionToken,
           'Content-Type': 'application/json',
         },
       }

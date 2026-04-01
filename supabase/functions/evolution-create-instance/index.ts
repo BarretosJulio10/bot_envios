@@ -53,7 +53,7 @@ serve(async (req) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'apikey': global_apikey, // Usar apikey global dos secrets
+        'token': global_apikey, // Uazapi usa token
       },
       body: JSON.stringify({
         instanceName: instance_name,
@@ -71,14 +71,14 @@ serve(async (req) => {
     const createResult = await createResponse.json();
     console.log('Instance created:', createResult);
 
-    // TODO: Fazer requisição GET para obter QR code
-    // Rota oficial: GET /instance/connect/{instance}
+    // Uazapi
+    // Rota /instance/connect usando o token da instancia no header ou parametros
     const connectResponse = await fetch(
-      `${base_url}/instance/connect/${instance_name}`,
+      `${base_url}/instance/connect`,
       {
         method: 'GET',
         headers: {
-          'apikey': global_apikey,
+          'token': instance_token,
         },
       }
     );
