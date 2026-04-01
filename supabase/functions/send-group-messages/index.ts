@@ -108,7 +108,18 @@ serve(async (req) => {
       let payload: any = {};
       let endpoint = '';
 
-      if (message.image_url) {
+      if (message.message_type === 'menu') {
+        endpoint = `${uazapiUrl}/send/menu`;
+        payload = {
+          number: message.group_id,
+          type: 'list',
+          text: message.caption || '',
+          footerText: message.footer_text || '',
+          listButton: message.list_button || 'Ver opções',
+          choices: JSON.parse(message.menu_choices || '[]'),
+          delay: 1200,
+        };
+      } else if (message.image_url) {
         const urlParts = message.image_url.split('/whatsapp-files/');
         if (urlParts.length < 2) throw new Error('Caminho do arquivo invalido na URL');
         const filePath = urlParts[1];

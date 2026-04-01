@@ -43,6 +43,11 @@ export default function GroupSender() {
   const [pauseDuration, setPauseDuration] = useState(120);
   const [sendAsDocument, setSendAsDocument] = useState(false);
   const [sendAsSticker, setSendAsSticker] = useState(false);
+  const [isMenuMode, setIsMenuMode] = useState(false);
+  const [menuChoices, setMenuChoices] = useState<{ title: string }[]>([]);
+  const [listButtonText, setListButtonText] = useState("Ver opções");
+  const [footerText, setFooterText] = useState("");
+  const [newChoice, setNewChoice] = useState("");
 
   useEffect(() => {
     loadMessages();
@@ -135,6 +140,20 @@ export default function GroupSender() {
   const removeFile = (index: number) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
     setFilePreviews(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const addMenuChoice = () => {
+    if (!newChoice.trim()) return;
+    if (menuChoices.length >= 10) {
+      toast.error("Máximo de 10 opções permitidas");
+      return;
+    }
+    setMenuChoices([...menuChoices, { title: newChoice.trim() }]);
+    setNewChoice("");
+  };
+
+  const removeMenuChoice = (index: number) => {
+    setMenuChoices(menuChoices.filter((_, i) => i !== index));
   };
 
   const getFileType = (mimeType: string): string => {
@@ -251,8 +270,27 @@ export default function GroupSender() {
               file_type: userFileType || fileMeta.type,
               caption: index === 0 ? (caption || null) : null,
               status: 'queued',
-              ordering_index: globalIndex++
+              ordering_index: globalIndex++,
+              message_type: 'media'
             });
+          });
+        }
+        // Se modo MENU ativado
+        else if (isMenuMode) {
+          messagesToInsert.push({
+            user_id: user.id,
+            group_id: groupId,
+            group_name: group?.name || 'Desconhecido',
+            image_url: null,
+            file_name: null,
+            file_type: 'text',
+            caption: caption || 'Confira as opções abaixo:',
+            status: 'queued',
+            ordering_index: globalIndex++,
+            message_type: 'menu',
+            footer_text: footerText,
+            list_button: listButtonText,
+            menu_choices: JSON.stringify(menuChoices)
           });
         }
         // Se NÃO temos arquivos mas temos legenda, criar mensagem de texto
@@ -266,7 +304,8 @@ export default function GroupSender() {
             file_type: 'image',
             caption: caption,
             status: 'queued',
-            ordering_index: globalIndex++
+            ordering_index: globalIndex++,
+            message_type: 'text'
           });
         }
       }
@@ -289,6 +328,10 @@ export default function GroupSender() {
       setCaption("");
       setSendAsDocument(false);
       setSendAsSticker(false);
+      setIsMenuMode(false);
+      setMenuChoices([]);
+      setListButtonText("Ver opções");
+      setFooterText("");
 
     } catch (error: any) {
       toast.error(error.message || 'Erro ao criar mensagens');
@@ -566,6 +609,75 @@ export default function GroupSender() {
                 Enviar como figurinha
               </Label>
             </div>
+
+            <div className="flex items-center space-x-2 pt-2 border-t mt-2">
+              <input
+                type="checkbox"
+                id="isMenuMode"
+                checked={isMenuMode}
+                onChange={(e) => {
+                  setIsMenuMode(e.target.checked);
+                  if (e.target.checked) {
+                    setFiles([]);
+                    setFilePreviews([]);
+                    setSendAsDocument(false);
+                    setSendAsSticker(false);
+                  }
+                }}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              <Label htmlFor="isMenuMode" className="text-sm font-bold text-amber-500 leading-none cursor-pointer">
+                Ativar Mensagem com Botões (Menu/Lista)
+              </Label>
+            </div>
+
+            {isMenuMode && (
+              <Card className="p-4 bg-muted/30 border-dashed border-amber-500/30 space-y-4 animate-in fade-in slide-in-from-top-1">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Texto do Botão Disparador</Label>
+                    <Input 
+                      value={listButtonText} 
+                      onChange={(e) => setListButtonText(e.target.value)} 
+                      placeholder="Ex: Ver opções"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Texto do Rodapé (Opcional)</Label>
+                    <Input 
+                      value={footerText} 
+                      onChange={(e) => setFooterText(e.target.value)} 
+                      placeholder="Ex: Escolha uma opção acima"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Opções da Lista (Máximo 10)</Label>
+                  <div className="flex gap-2">
+                    <Input 
+                      value={newChoice} 
+                      onChange={(e) => setNewChoice(e.target.value)} 
+                      placeholder="Nome da opção..."
+                      onKeyDown={(e) => e.key === 'Enter' && addMenuChoice()}
+                    />
+                    <Button type="button" onClick={addMenuChoice} variant="secondary">Adicionar</Button>
+                  </div>
+                  
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {menuChoices.map((choice, idx) => (
+                      <Badge key={idx} variant="secondary" className="pl-3 py-1 gap-2 border-amber-500/20">
+                        {choice.title}
+                        <button onClick={() => removeMenuChoice(idx)} className="hover:text-destructive transition-colors">
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                    {menuChoices.length === 0 && <p className="text-xs text-muted-foreground italic">Nenhuma opção adicionada ainda.</p>}
+                  </div>
+                </div>
+              </Card>
+            )}
           </div>
         </div>
 
