@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Loader2, CheckCircle, Wifi } from "lucide-react";
+import { Loader2, CheckCircle, Wifi, RefreshCcw, ArrowLeft, AlertTriangle } from "lucide-react";
 
 interface ConfigDialogProps {
   open: boolean;
@@ -21,11 +21,13 @@ interface ConfigDialogProps {
 
 export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDialogProps) {
   const [loading, setLoading] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [step, setStep] = useState<"form" | "qrcode" | "connected">("form");
   const [qrCode, setQrCode] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [instanceName, setInstanceName] = useState("");
-  const [errorCount, setErrorCount] = useState(0);
+  const [pollingErrors, setPollingErrors] = useState(0);
+  const [pollingFailed, setPollingFailed] = useState(false);
   const [config, setConfig] = useState({
     delay_min: 8000,
     delay_max: 12000,
@@ -33,50 +35,55 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
     pause_duration: 60000,
   });
 
+  // Reset completo de estados ao fechar ou abrir o modal
   useEffect(() => {
     if (open) {
       loadConfig();
-      setErrorCount(0); // Reset error count when opening
+      setPollingErrors(0);
+      setPollingFailed(false);
     } else {
-      // Reset tudo quando fechar
       setStep("form");
       setQrCode("");
       setPairingCode("");
-      setErrorCount(0);
+      setPollingErrors(0);
+      setPollingFailed(false);
     }
   }, [open]);
 
-  // TODO: Polling para verificar status da conexão a cada 3 segundos quando exibindo QR code
+  // Polling para verificar status da conexão a cada 3 segundos quando exibindo QR code
   useEffect(() => {
     if (step !== "qrcode" || !open) return;
 
     let errorCountLocal = 0;
-    const maxErrors = 5; // Parar após 5 erros consecutivos
+    const maxErrors = 5;
 
     const interval = setInterval(async () => {
       try {
         const { data, error } = await supabase.functions.invoke('evolution-status');
-        
+
         if (error) {
-          console.error('Status check error:', error);
+          console.error('[ConfigDialog] Status check error:', error);
           errorCountLocal++;
-          setErrorCount(errorCountLocal);
-          
-          // Parar polling após muitos erros
+          setPollingErrors(errorCountLocal);
+
           if (errorCountLocal >= maxErrors) {
-            console.error('Too many errors, stopping status check');
+            console.error('[ConfigDialog] Muitos erros no polling. Parando.');
             clearInterval(interval);
-            toast.error('Erro ao verificar status. Tente novamente.');
-            setStep("form");
+            setPollingFailed(true);
           }
           return;
         }
 
-        // Reset error count on success
+        // Reset de erros em caso de sucesso
         errorCountLocal = 0;
-        setErrorCount(0);
+        setPollingErrors(0);
+        setPollingFailed(false);
 
-        // TODO: Quando conectar (connected = true), fechar modal automaticamente
+        // QR code atualizado pode vir no status — atualizar na tela
+        if (data.qrCode && data.qrCode !== qrCode) {
+          setQrCode(data.qrCode);
+        }
+
         if (data.connected) {
           clearInterval(interval);
           setStep("connected");
@@ -86,27 +93,26 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
           }, 2000);
         }
       } catch (err) {
-        console.error('Status polling error:', err);
+        console.error('[ConfigDialog] Status polling error:', err);
         errorCountLocal++;
-        setErrorCount(errorCountLocal);
-        
+        setPollingErrors(errorCountLocal);
+
         if (errorCountLocal >= maxErrors) {
           clearInterval(interval);
-          toast.error('Erro ao verificar status. Tente novamente.');
-          setStep("form");
+          setPollingFailed(true);
         }
       }
-    }, 3000); // Verificar a cada 3 segundos
+    }, 3000);
 
     return () => clearInterval(interval);
-  }, [step, open, onSaved, onOpenChange]);
+  }, [step, open]);
 
   const loadConfig = async () => {
     const { data } = await supabase
       .from('evolution_config')
       .select('*')
       .single();
-    
+
     if (data) {
       setInstanceName(data.instance_id || "");
       setConfig({
@@ -115,17 +121,12 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
         pause_after: data.pause_after,
         pause_duration: data.pause_duration,
       });
-      
-      // Não reabrir QR automaticamente se o modal acabou de abrir
-      // Apenas se ainda estiver no step "form"
-      if (step === "form" && data.instance_created && data.connection_status !== 'open' && data.qr_code) {
-        setQrCode(data.qr_code);
-        setStep("qrcode");
-      }
+
+      // NÃO restaurar QR do banco automaticamente —
+      // QR codes expiram em ~2 min. Usuário deve reconectar manualmente.
     }
   };
 
-  // TODO: Criar instância na Uazapi usando os secrets
   const handleCreateInstance = async () => {
     if (!instanceName) {
       toast.error("Informe o nome da instância");
@@ -133,12 +134,12 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
     }
 
     setLoading(true);
+    setPollingFailed(false);
+    setPollingErrors(0);
+
     try {
-      // TODO: Chamar edge function para criar instância e obter QR code
       const { data, error } = await supabase.functions.invoke('evolution-create-instance', {
-        body: {
-          instance_name: instanceName,
-        }
+        body: { instance_name: instanceName },
       });
 
       if (error) throw error;
@@ -147,23 +148,53 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
         throw new Error(data.error || 'Erro ao criar instância');
       }
 
-      // TODO: Armazenar QR code base64 e pairing code
-      setQrCode(data.qrCode);
-      setPairingCode(data.pairingCode);
+      setQrCode(data.qrCode || "");
+      setPairingCode(data.pairingCode || "");
       setStep("qrcode");
-      
-      toast.success(data.message);
+
+      toast.success(data.message || "QR Code gerado! Escaneie com seu WhatsApp.");
     } catch (error: any) {
-      console.error('Create instance error:', error);
-      toast.error(error.message || 'Erro ao criar instância');
+      console.error('[ConfigDialog] Create instance error:', error);
+      toast.error(error.message || 'Erro ao criar instância. Tente novamente.');
     } finally {
       setLoading(false);
     }
   };
 
+  /**
+   * Limpa o estado da instância na Uazapi e no banco,
+   * retornando ao formulário para gerar um novo QR.
+   */
+  const handleReset = async () => {
+    setResetting(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('evolution-reset-instance');
+
+      if (error) throw error;
+
+      if (!data.success) {
+        throw new Error(data.error || 'Erro ao resetar instância');
+      }
+
+      // Voltar ao formulário com estado limpo
+      setStep("form");
+      setQrCode("");
+      setPairingCode("");
+      setPollingErrors(0);
+      setPollingFailed(false);
+
+      toast.success("Instância limpa! Clique em 'Conectar WhatsApp' para gerar um novo QR Code.");
+    } catch (error: any) {
+      console.error('[ConfigDialog] Reset error:', error);
+      toast.error(error.message || 'Erro ao limpar instância. Tente fechar e abrir novamente.');
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!instanceName.trim()) {
       toast.error("Informe o nome da instância");
       return;
@@ -180,31 +211,28 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
         .upsert({
           user_id: user.id,
           instance_id: instanceName.trim(),
-          base_url: '', // Será preenchido pelos secrets
-          token: '', // Será preenchido pelos secrets
-          ...config
-        }, {
-          onConflict: 'user_id'
-        });
+          base_url: '',
+          token: '',
+          ...config,
+        }, { onConflict: 'user_id' });
 
       if (error) throw error;
 
       toast.success("Configuração salva com sucesso!");
-      onSaved(); // Notificar que salvou
+      onSaved();
     } catch (error: any) {
-      console.error('Save config error:', error);
+      console.error('[ConfigDialog] Save config error:', error);
       toast.error(error.message || "Erro ao salvar configuração");
     } finally {
       setLoading(false);
     }
   };
 
-  // TODO: Testar conexão com a Uazapi
   const handleTestConnection = async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('test-connection');
-      
+
       if (error) throw error;
 
       if (data.success) {
@@ -235,7 +263,7 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
           </DialogDescription>
         </DialogHeader>
 
-        {/* TODO: Formulário inicial para configurar instância */}
+        {/* ── Step: Formulário ─────────────────────────────────────────── */}
         {step === "form" && (
           <form onSubmit={handleSave} className="space-y-4">
             <div className="space-y-2">
@@ -264,7 +292,6 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
                   disabled={loading}
                 />
               </div>
-
               <div className="space-y-2">
                 <Label htmlFor="delay_max">Delay Máx (ms)</Label>
                 <Input
@@ -288,7 +315,6 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
                   disabled={loading}
                 />
               </div>
-
               <div className="space-y-2">
                 <Label htmlFor="pause_duration">Duração pausa (ms)</Label>
                 <Input
@@ -332,19 +358,26 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
           </form>
         )}
 
-        {/* TODO: Exibir QR Code base64 e pairing code */}
+        {/* ── Step: QR Code ─────────────────────────────────────────────── */}
         {step === "qrcode" && (
           <div className="space-y-4">
+
+            {/* QR Code */}
             <div className="flex justify-center">
-              {qrCode && (
-                <img 
+              {qrCode ? (
+                <img
                   src={qrCode}
-                  alt="QR Code"
+                  alt="QR Code WhatsApp"
                   className="w-64 h-64 border-2 border-border rounded-lg"
                 />
+              ) : (
+                <div className="w-64 h-64 border-2 border-dashed border-border rounded-lg flex items-center justify-center text-muted-foreground text-sm">
+                  Aguardando QR Code...
+                </div>
               )}
             </div>
 
+            {/* Pairing code */}
             {pairingCode && (
               <div className="text-center space-y-1">
                 <p className="text-sm text-muted-foreground">
@@ -356,14 +389,74 @@ export default function ConfigDialog({ open, onOpenChange, onSaved }: ConfigDial
               </div>
             )}
 
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Aguardando conexão...
+            {/* Status: Aguardando ou Erro */}
+            {pollingFailed ? (
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 space-y-3">
+                <div className="flex items-center gap-2 text-destructive text-sm font-medium">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                  Não foi possível verificar o status da conexão.
+                  O QR Code pode ter expirado.
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Limpe e gere um novo QR Code para tentar novamente.
+                </p>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Aguardando conexão...
+                {pollingErrors > 0 && (
+                  <span className="text-amber-500 text-xs">
+                    ({pollingErrors}/{5} erros)
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Botões de ação */}
+            <div className="flex gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1"
+                onClick={handleReset}
+                disabled={resetting}
+              >
+                {resetting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Limpando...
+                  </>
+                ) : (
+                  <>
+                    <ArrowLeft className="mr-2 h-4 w-4" />
+                    Voltar
+                  </>
+                )}
+              </Button>
+              <Button
+                type="button"
+                className="flex-1"
+                onClick={handleReset}
+                disabled={resetting}
+              >
+                {resetting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Limpando...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCcw className="mr-2 h-4 w-4" />
+                    Limpar e Gerar Novo QR
+                  </>
+                )}
+              </Button>
             </div>
           </div>
         )}
 
-        {/* TODO: Mensagem de sucesso quando conectar */}
+        {/* ── Step: Conectado ───────────────────────────────────────────── */}
         {step === "connected" && (
           <div className="flex flex-col items-center justify-center py-8 space-y-4">
             <CheckCircle className="h-16 w-16 text-green-500" />

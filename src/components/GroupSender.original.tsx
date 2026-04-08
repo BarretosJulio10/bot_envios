@@ -353,20 +353,7 @@ export default function GroupSender() {
     try {
       const { data, error } = await supabase.functions.invoke('send-group-messages');
 
-      if (error) {
-        console.error('Raw Supabase Edge Function Error:', error);
-        if (error.context && typeof error.context.json === 'function') {
-            try {
-                const errorBody = await error.context.json();
-                throw new Error(errorBody.error || errorBody.message || error.message);
-            } catch (e) {
-                // Parsing fallback
-            }
-        } else if (error.context && error.context.error) {
-            throw new Error(error.context.error);
-        }
-        throw error;
-      }
+      if (error) throw error;
 
       if (data.success) {
         toast.success(data.message || 'Envio iniciado! Acompanhe o progresso em tempo real.');
@@ -374,8 +361,7 @@ export default function GroupSender() {
         toast.error(data.error || 'Erro ao enviar mensagens');
       }
     } catch (error: any) {
-      const errorMessage = error.message || 'Erro ao enviar mensagens';
-      toast.error(errorMessage);
+      toast.error(error.message || 'Erro ao enviar mensagens');
     } finally {
       setSending(false);
     }
@@ -711,9 +697,9 @@ export default function GroupSender() {
             <Upload className="h-4 w-4" />
             Adicionar à Fila
           </Button>
-          <Button onClick={startSending} disabled={sending || stats.queued === 0} className={`gap-2 ${!sending && stats.queued > 0 ? 'bg-green-500 hover:bg-green-600 text-white' : ''}`}>
+          <Button onClick={startSending} disabled={sending || stats.queued === 0} className="gap-2">
             {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            {sending ? 'Enviando...' : 'Iniciar Envio'}
+            Iniciar Envio
           </Button>
           <Button onClick={clearAll} variant="destructive" className="gap-2">
             <Trash2 className="h-4 w-4" />

@@ -196,64 +196,46 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Processa em background para nao causar timeout na requisicao do painel
-    // @ts-ignore - EdgeRuntime injetado pelo Supabase/Deno
-    EdgeRuntime.waitUntil((async () => {
-      try {
-        await ensureInstanceSession();
-        const batchSize = config.pause_after || 5;
+    // Processamento síncrono em lote controlado (evita timeout e respeita UI)
+    const delayMin = config.delay_min || 10000;
+    const delayMax = config.delay_max || 30000;
+    const avgDelay = (delayMin + delayMax) / 2;
+    const targetMs = 45000; 
+    const computedBatch = Math.floor(targetMs / Math.max(1, avgDelay));
+    const safeBatch = Math.max(1, Math.min(config.pause_after || 100, Math.min(10, computedBatch)));
 
-        for (let i = 0; i < allMessages.length; i += batchSize) {
-          const batch = allMessages.slice(i, i + batchSize);
-          for (const msg of batch) {
-            try {
-              await supabaseClient.from('group_messages').update({ status: 'sending', attempts: msg.attempts + 1 }).eq('id', msg.id);
-              await processMessage(msg);
-              await supabaseClient.from('group_messages').update({ status: 'sent', sent_at: new Date().toISOString(), error_message: null }).eq('id', msg.id);
-            } catch (err: any) {
-              await supabaseClient.from('group_messages').update({ status: 'failed', error_message: err.message }).eq('id', msg.id);
-            }
+    const batch = allMessages.slice(0, safeBatch);
+    console.log(`📦 Processando lote seguro Grupos: safeBatch=${safeBatch}`);
+
+    await ensureInstanceSession();
+
+    let sentCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < batch.length; i++) {
+        const msg = batch[i];
+        try {
+            await supabaseClient.from('group_messages').update({ status: 'sending', attempts: msg.attempts + 1 }).eq('id', msg.id);
+            await processMessage(msg);
+            await supabaseClient.from('group_messages').update({ status: 'sent', sent_at: new Date().toISOString(), error_message: null }).eq('id', msg.id);
+            sentCount++;
+        } catch (err: any) {
+            await supabaseClient.from('group_messages').update({ status: 'failed', error_message: err.message }).eq('id', msg.id);
+            failedCount++;
+        }
+        
+        if (i < batch.length - 1) {
             const delay = Math.random() * (config.delay_max - config.delay_min) + config.delay_min;
             await new Promise(r => setTimeout(r, delay));
-          }
-          if (i + batchSize < allMessages.length) {
-            await new Promise(r => setTimeout(r, config.pause_duration || 30000));
-          }
         }
+    }
 
-        // Retry para falhas (ate 3 ciclos)
-        let retryCycle = 0;
-        while (retryCycle < 3) {
-          const { data: failed } = await supabaseClient
-            .from('group_messages')
-            .select('*')
-            .eq('user_id', user.id)
-            .eq('status', 'failed')
-            .lt('attempts', 5);
-
-          if (!failed || failed.length === 0) break;
-
-          for (const msg of failed) {
-            try {
-              await supabaseClient.from('group_messages').update({ status: 'sending', attempts: msg.attempts + 1 }).eq('id', msg.id);
-              await processMessage(msg);
-              await supabaseClient.from('group_messages').update({ status: 'sent', sent_at: new Date().toISOString(), error_message: null }).eq('id', msg.id);
-            } catch (err: any) {
-              await supabaseClient.from('group_messages').update({ status: 'failed', error_message: err.message }).eq('id', msg.id);
-            }
-            await new Promise(r => setTimeout(r, 2000));
-          }
-          retryCycle++;
-          await new Promise(r => setTimeout(r, 10000));
-        }
-      } catch (e) {
-        console.error('Background process error:', e);
-      }
-    })());
+    const processed = batch.length;
+    const moreRemaining = allMessages.length > batch.length;
 
     return new Response(
-      JSON.stringify({ success: true, message: 'Processamento iniciado', count: allMessages.length }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 202 }
+      JSON.stringify({ success: true, processed, sent: sentCount, failed: failedCount, moreRemaining }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     );
 
   } catch (error: any) {

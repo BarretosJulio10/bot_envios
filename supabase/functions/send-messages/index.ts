@@ -134,103 +134,100 @@ Deno.serve(async (req) => {
 
       console.log(`Total de ${allFilteredMessages.length} mensagens para enviar`);
 
-      const batchSize = config.pause_after || 5;
-      const pauseDuration = config.pause_duration || 30000;
+      // Lógica restaurada de processamento em lote
+      // Calcular tamanho seguro baseado nos delays (para evitar timeout de 60s da Edge Function)
+      const delayMin = config.delay_min || 10000;
+      const delayMax = config.delay_max || 30000;
+      const avgDelay = (delayMin + delayMax) / 2;
+      const targetMs = 45000; // Máximo de 45s
+      const computedBatch = Math.floor(targetMs / Math.max(1, avgDelay));
+      const safeBatch = Math.max(1, Math.min(config.pause_after || 100, Math.min(10, computedBatch)));
 
-      // Executar o envio em background para impedir timeout no painel do usuário
-      // @ts-ignore - EdgeRuntime is injected globally by Deno/Supabase
-      EdgeRuntime.waitUntil((async () => {
+      const batch = allFilteredMessages.slice(0, safeBatch);
+      console.log(`📦 Processando lote seguro: safeBatch=${safeBatch}, avgDelay=${avgDelay}ms, fila=${allFilteredMessages.length}`);
+
+      let sentCount = 0;
+      let failedCount = 0;
+
+      for (let i = 0; i < batch.length; i++) {
+        const message = batch[i];
+
         try {
-          // Processa lotes intercalados por pause_duration
-          for (let i = 0; i < allFilteredMessages.length; i += batchSize) {
-            const batch = allFilteredMessages.slice(i, i + batchSize);
-            console.log(`📦 Processando lote: ${batch.length} msg(s) (Índice ${i} até ${i + batchSize - 1})`);
+          // Status enviado
+          await supabase.from('messages').update({ status: 'sending', attempts: message.attempts + 1 }).eq('id', message.id);
+          console.log(`Processando mensagem ${message.id}: ${message.filename} para ${message.phone}`);
 
-            for (let j = 0; j < batch.length; j++) {
-              const message = batch[j];
-              try {
-                // Update status to sending
-                await supabase.from('messages').update({ status: 'sending', attempts: message.attempts + 1 }).eq('id', message.id);
-                console.log(`Processando mensagem ${message.id}: ${message.filename} para ${message.phone}`);
+          if (!message.file_url) throw new Error('Nenhum arquivo apontado');
+                 
+          // URL assinada
+          const urlParts = message.file_url.split('/whatsapp-files/');
+          if (urlParts.length < 2) throw new Error('Caminho inválido');
+          const filePath = urlParts[1];
 
-                if (!message.file_url) throw new Error('Nenhum arquivo apontado');
-                
-                // Extração e assinatura de URL
-                const urlParts = message.file_url.split('/whatsapp-files/');
-                if (urlParts.length < 2) throw new Error('Caminho inválido');
-                const filePath = urlParts[1];
+          const { data: signedData, error: signedError } = await supabase.storage.from('whatsapp-files').createSignedUrl(filePath, 60 * 30);
+          if (signedError || !signedData?.signedUrl) throw new Error(`Erro URL: ${signedError?.message || ''}`);
+          const signedUrl = signedData.signedUrl;
 
-                const { data: signedData, error: signedError } = await supabase.storage.from('whatsapp-files').createSignedUrl(filePath, 60 * 30);
-                if (signedError || !signedData?.signedUrl) throw new Error(`Erro URL: ${signedError?.message || ''}`);
-                const signedUrl = signedData.signedUrl;
+          const ext = message.filename?.split('.').pop()?.toLowerCase() || '';
+          let mediaType = 'document';
+          if (message.file_type === 'document') mediaType = 'document';
+          else if (message.file_type === 'sticker') mediaType = 'sticker';
+          else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
+          else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg'].includes(ext)) mediaType = 'video';
+          else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
+          else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
 
-                const ext = message.filename?.split('.').pop()?.toLowerCase() || '';
-                let mediaType = 'document';
-                if (message.file_type === 'document') mediaType = 'document';
-                else if (message.file_type === 'sticker') mediaType = 'sticker';
-                else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'svg'].includes(ext)) mediaType = 'image';
-                else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv', 'mpeg', 'mpg'].includes(ext)) mediaType = 'video';
-                else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
-                else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
+          // Contracto Uazapi 2.0.1
+          let endpoint = `${evolutionApiUrl}/send/media`;
+          let payload: any = {
+            number: message.phone,
+            type: mediaType,
+            file: signedUrl,
+            docName: message.filename || 'arquivo',
+            text: message.message_text || '',
+            delay: 1200,
+          };
 
-                let endpoint = `${evolutionApiUrl}/send/media`;
-                let payload: any = {
-                  number: message.phone,
-                  type: mediaType,
-                  file: signedUrl,
-                  docName: message.filename || 'arquivo',
-                  text: message.message_text || '',
-                  delay: 1200,
-                };
-
-                if (mediaType === 'sticker') {
-                  payload = { number: message.phone, type: 'sticker', file: signedUrl };
-                }
-
-                const response = await fetch(endpoint, {
-                  method: 'POST',
-                  headers: { 
-                    'Content-Type': 'application/json', 
-                    'token': instanceToken,  // Token da instância — obrigatório
-                  },
-                  body: JSON.stringify(payload),
-                });
-                
-                if (!response.ok) {
-                  const errorBody = await response.text();
-                  throw new Error(`Uazapi API ${response.status}: ${errorBody}`);
-                }
-                const result = await response.json();
-                await supabase.from('messages').update({ status: 'sent', sent_at: new Date().toISOString(), evolution_msg_id: result.key?.id || null, error_message: null }).eq('id', message.id);
-                console.log(`Msg enviada p/ ${message.phone}`);
-              } catch (err: any) {
-                console.error(`Falha msg ${message.id}:`, err);
-                await supabase.from('messages').update({ status: 'failed', error_message: err.message || 'Erro' }).eq('id', message.id);
-              }
-
-              // Anti-ban delay entre mensagens do mesmo lote (exceto na última mensagem da fila geral)
-              if (i + j < allFilteredMessages.length - 1) {
-                const delayMs = Math.random() * (config.delay_max - config.delay_min) + config.delay_min;
-                console.log(`Timeout Msg: Aguardando ${delayMs}ms anti-ban`);
-                await new Promise(r => setTimeout(r, delayMs));
-              }
-            } // Fim do For do Batch Interno
-
-            // Se ainda houver próximos lotes, aplicar a pausa longa (pause_duration)
-            if (i + batchSize < allFilteredMessages.length) {
-              console.log(`Pausa Longa entre lotes: Aguardando ${pauseDuration}ms`);
-              await new Promise(r => setTimeout(r, pauseDuration));
-            }
+          if (mediaType === 'sticker') {
+            payload = { number: message.phone, type: 'sticker', file: signedUrl };
           }
-          console.log(`✅ Fila inteira processada em background.`);
-        } catch (bgError) {
-          console.error("Erro critico no background job: ", bgError);
-        }
-      })());
 
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json', 
+              'token': instanceToken, // Token obrigatório da instância
+            },
+            body: JSON.stringify(payload),
+          });
+                 
+          if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`Uazapi API ${response.status}: ${errorBody}`);
+          }
+          const result = await response.json();
+          await supabase.from('messages').update({ status: 'sent', sent_at: new Date().toISOString(), evolution_msg_id: result.key?.id || null, error_message: null }).eq('id', message.id);
+          console.log(`Msg enviada p/ ${message.phone}`);
+          sentCount++;
+        } catch (err: any) {
+          console.error(`Falha msg ${message.id}:`, err);
+          await supabase.from('messages').update({ status: 'failed', error_message: err.message || 'Erro' }).eq('id', message.id);
+          failedCount++;
+        }
+
+        if (i < batch.length - 1) {
+          const delayMs = Math.random() * (config.delay_max - config.delay_min) + config.delay_min;
+          console.log(`Aguardando ${delayMs}ms anti-ban`);
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+      }
+
+      const processed = batch.length;
+      const moreRemaining = allFilteredMessages.length > batch.length;
+      
       return new Response(
-        JSON.stringify({ success: true, message: 'Processamento em massa iniciado em background.', count: allFilteredMessages.length }),
-        { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ success: true, processed, sent: sentCount, failed: failedCount, moreRemaining }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 

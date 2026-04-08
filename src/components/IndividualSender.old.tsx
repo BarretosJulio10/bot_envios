@@ -100,20 +100,7 @@ export default function IndividualSender() {
                     body: { action: 'start' }
                 });
 
-                if (error) {
-                    console.error('Raw Supabase Edge Function Error:', error);
-                    if (error.context && typeof error.context.json === 'function') {
-                        try {
-                            const errorBody = await error.context.json();
-                            throw new Error(errorBody.error || errorBody.message || error.message);
-                        } catch (e) {
-                            // Parsing fallback
-                        }
-                    } else if (error.context && error.context.error) {
-                        throw new Error(error.context.error);
-                    }
-                    throw error;
-                }
+                if (error) throw error;
 
                 console.log('✅ Batch result:', data);
 
@@ -208,18 +195,7 @@ export default function IndividualSender() {
                 }
             } catch (err: any) {
                 console.error('❌ Batch error:', err);
-                const errorMessage = err.message || 'Erro de comunicação com o servidor';
-                toast.error(`Falha no envio: ${errorMessage}`);
-                
-                // Se a mensagem de erro indicar token da instância ou credenciais, NÃO rodar auto-retry
-                // pois isso criaria um loop de 400 Bad Request
-                if (errorMessage.includes('Token') || errorMessage.includes('Credenciais')) {
-                    setIsSending(false);
-                    isSendingRef.current = false;
-                    return;
-                }
-
-                // Se der erro de rede grave, tenta uma vez após 5s se não for stop manual
+                // Se der erro grave na requisição, tenta uma vez após 5s se não for stop manual
                 setTimeout(() => {
                     if (isSendingRef.current) sendLoop();
                 }, 5000);
@@ -354,10 +330,10 @@ export default function IndividualSender() {
                 <Button
                     onClick={startSending}
                     disabled={isSending}
-                    className={`gap-2 ${!isSending ? 'bg-green-500 hover:bg-green-600 text-white' : ''}`}
+                    className="gap-2"
                 >
                     <Send className="h-4 w-4" />
-                    {isSending ? 'Enviando...' : 'Iniciar Envios'}
+                    Iniciar Envio
                 </Button>
                 <Button
                     onClick={pauseSending}
