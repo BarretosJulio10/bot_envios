@@ -1,31 +1,32 @@
-# AI MEMORY - Bot Envios Uazapi
+# AI MEMORY - Bot Envios Fzap
 
 ## Contexto do Projeto
-Sistema de envios em massa (WhatsApp) migrado da Evolution API para a **Uazapi**.
-O sistema utiliza Supabase (Edge Functions + Database + Storage).
+Sistema de envios em massa (WhatsApp) migrado da Uazapi para a **Fzap API (v1.23.0)**.
+O sistema utiliza Supabase (Edge Functions + Database + Storage) e projeto atual: `uvvaxwtumuabfklccjgd`.
 
 ## Regra de Ouro (Sempre Seguir)
-1. **UAZAPI APENAS:** Nunca use termos ou lógica relacionados à "Evolution API". 
+1. **FZAP APENAS:** Nunca use termos ou lógica relacionados à "Evolution API" ou "Uazapi" nas novas implementações. 
 2. **AUTENTICAÇÃO:** 
-   - `admintoken` (Header): Usado para operações administrativas (ex: criar instância). Vem do secret `global_apikay`.
-   - `token` (Header): Usado para operações da instância (ex: enviar mensagem, verificar status). Vem da coluna `token` na tabela `evolution_config`.
-3. **ENDPOINTS CRÍTICOS (Uazapi 2.0.1):**
-   - `POST /instance/create`: Requer `admintoken`. Retorna o `token` da instância.
-   - `POST /instance/connect`: Requer `token`. Gera QR Code ou Pairing Code. Timeout: 2 min (QR) / 5 min (pairing).
-   - `GET /instance/status`: Requer `token`. QR atualizado vem em `instance.qrcode`.
-   - `POST /instance/disconnect`: Requer `token`. Encerra sessão, exige novo QR na reconexão.
-   - `POST /instance/reset`: Requer `token`. Reset controlado do runtime (usar como fallback do disconnect).
+   - `Authorization` (Header): Usado apenas para operações administrativas na rota `/admin/users` (ex: criar instância). Vem do secret `global_apikay`.
+   - `token` (Header): Usado para TODAS AS OUTRAS operações da instância (ex: conectar, enviar mensagem, verificar status). Vem da coluna `token` na tabela `evolution_config` (salvo durante a criação).
+3. **ENDPOINTS CRÍTICOS (Fzap v1.23.0):**
+   - `POST /admin/users`: Requer `Authorization: <ADMIN_TOKEN>`. Cria a instância e retorna o `token` de sessão no body.
+   - `POST /session/connect`: Requer `token: <session_token>`. Inicia a conexão websocket.
+   - `GET /session/qr`: Requer `token`. Obtém o QR Code em Base64 (assíncrono, pode requerer polling).
+   - `GET /session/status`: Requer `token`. Verifica status (logado = `data.loggedIn === true`).
+   - `POST /session/disconnect` e `POST /session/reset`: Usados para encerrar e resetar sessões ativas.
+   - Envios de mídia usam endpoints separados (`/chat/send/image`, `/chat/send/video`, etc.) passando propriedades tipadas (ex: `phone`, `caption`, `image`).
 
 ## Edge Functions Existentes
 | Função | Propósito |
 |---|---|
-| `evolution-create-instance` | Cria instância + gera QR Code |
-| `evolution-status` | Polling de status (connected/connecting) |
+| `evolution-create-instance` | Cria instância (/admin/users) + conecta + gera QR Code (/session/qr) |
+| `evolution-status` | Polling de status (GET /session/status) |
 | `evolution-reset-instance` | Desconecta + limpa banco (reset do fluxo) |
-| `send-messages` | Envio individual |
-| `send-group-messages` | Envio para grupos |
-| `fetch-groups` | Lista grupos |
-| `test-connection` | Testa conectividade |
+| `send-messages` | Envio individual (refatorada para múltiplos endpoints de mídia) |
+| `send-group-messages` | Envio para grupos (usando /chat/send/list, etc) |
+| `fetch-groups` | Lista grupos (GET /group/list) |
+| `test-connection` | Testa conectividade (GET /session/status) |
 | `cleanup-files` | Limpeza de arquivos |
 
 ## Fluxo de Conexão WhatsApp
@@ -37,18 +38,19 @@ qrcode → [Voltar] → evolution-reset-instance → step: form
 ```
 
 ## Reset de Instância (evolution-reset-instance)
-- Chama `POST /instance/disconnect` na Uazapi
-- Fallback: `POST /instance/reset` se disconnect falhar
+- Chama `POST /session/disconnect` na Fzap.
+- Fallback: `POST /session/reset` se disconnect falhar.
 - Limpa banco: `instance_created=false`, `qr_code=null`, `connection_status='disconnected'`, `token=''`
-- É tolerante a falhas de rede (limpa banco mesmo se Uazapi não responder)
+- É tolerante a falhas de rede (limpa banco mesmo se API não responder).
 
-## Status Atual
-- Fluxo de conexão com QR Code implementado e com recuperação de erros.
-- QR Code expirado do banco NÃO é mais restaurado automaticamente ao reabrir modal.
-- Polling exibe contador de erros na tela (não só toast silencioso).
+## Estado Atual (2026-05-07)
+O sistema foi migrado com sucesso para a **Fzap API (v1.23.0)**.
+- **Backend**: 8 Supabase Edge Functions deployadas no projeto `uvvaxwtumuabfklccjgd`.
+- **Secrets**: `EVOLUTION_API_URL` e `global_apikay` configurados.
+- **Tokens**: Sistema utiliza tokens curtos de 12 caracteres para máxima compatibilidade.
+- **Status**: Instâncias sendo criadas com sucesso (Status: "Conectando"). QRCode agora é buscado agressivamente durante o polling.
 
-## Histórico de Mudanças Recentes
-- Implementado fluxo de reset: botões "Voltar" e "Limpar e Gerar Novo QR" na tela do QR.
-- Criada Edge Function `evolution-reset-instance` (deploy realizado).
-- Corrigido: não restaurar QR expirado do banco ao reabrir o modal.
-- Corrigido: exibir estado de erro visível quando polling falha após 5 tentativas.
+### Configurações Importantes
+- **Admin Token**: `P3BpI2Cz1nUmFOXdHOeuGUzk` (Secret: `global_apikay`).
+- **Base URL**: `https://fzap.pagoupix.com.br` (Secret: `EVOLUTION_API_URL`).
+- **Headers**: Usar `Authorization: <admin_token>` para rotas `/admin` e `token: <inst_token>` (ou `apikey`) para rotas de sessão.

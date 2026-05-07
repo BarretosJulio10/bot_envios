@@ -1,16 +1,7 @@
+
 /**
- * Edge Function: evolution-status (Uazapi 2.0.1)
- * 
- * Endpoint Uazapi: GET /instance/status
- * Header: token (token da instância, não admintoken)
- * 
- * Response: {
- *   instance: { status, qrcode, paircode, name, profileName, ... },
- *   status: { connected: bool, loggedIn: bool, jid: ... }
- * }
- * 
- * Esta função faz polling para verificar se o QR Code foi escaneado.
- * Retorna { connected: true } quando a instância estiver online.
+ * Edge Function: evolution-status (Master Fullstack Edition)
+ * Fluxo: Status Check -> QR Polling (if not logged in) -> DB Update
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -31,7 +22,6 @@ Deno.serve(async (req: Request) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // Autenticar usuário
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) throw new Error('Sem header de autorização');
 
@@ -39,82 +29,83 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: userError } = await supabase.auth.getUser(jwt);
     if (userError || !user) throw new Error('Não autorizado');
 
-    // Buscar config do banco (inclui token da instância)
     const { data: config, error: configError } = await supabase
       .from('evolution_config')
-      .select('instance_id, token, base_url, connection_status')
+      .select('*')
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config) {
-      throw new Error('Configuração Uazapi não encontrada. Configure sua instância primeiro.');
+    if (configError || !config) throw new Error('Configuração não encontrada');
+
+    const fzapUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
+    const adminToken = Deno.env.get('global_apikay');
+    const instanceToken = config.token;
+
+    if (!fzapUrl || !adminToken || !instanceToken) {
+      throw new Error('Configurações de API incompletas (URL/Token)');
     }
 
-    if (!config.token) {
-      throw new Error('Token da instância não encontrado. Reconecte a instância.');
-    }
-
-    const uazapiUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
-    if (!uazapiUrl) throw new Error('URL da Uazapi não configurada');
-
-    console.log(`[evolution-status] Verificando status de: ${config.instance_id}`);
-
-    // ───────────────────────────────────────────────
-    // GET /instance/status
-    // Header: token (token da instância)
-    // Response: { status: { connected, loggedIn, jid }, instance: { status, qrcode, paircode } }
-    // ───────────────────────────────────────────────
-    const statusRes = await fetch(`${uazapiUrl}/instance/status`, {
+    // 1. CHECAR STATUS DA SESSÃO
+    const statusRes = await fetch(`${fzapUrl}/session/status`, {
       method: 'GET',
       headers: {
-        'token': config.token,
-        'Content-Type': 'application/json',
-      },
+        'apikey': adminToken,
+        'token': instanceToken
+      }
     });
 
-    const statusBody = await statusRes.text();
-    console.log(`[evolution-status] Resposta: ${statusRes.status} ${statusBody.substring(0, 300)}`);
+    const statusData = await statusRes.json();
+    console.log(`[Master Status] Resposta Status:`, JSON.stringify(statusData));
 
-    if (!statusRes.ok) {
-      throw new Error(`Erro ao verificar status (${statusRes.status}): ${statusBody}`);
+    const isLoggedIn = statusData.data?.loggedIn === true;
+    const isConnected = statusData.data?.connected === true;
+
+    let qrCode = config.qr_code;
+
+    // 2. SE NÃO ESTIVER LOGADO, BUSCAR QR CODE ATUALIZADO
+    if (!isLoggedIn) {
+      const qrRes = await fetch(`${fzapUrl}/session/qr`, {
+        method: 'GET',
+        headers: {
+          'apikey': adminToken,
+          'token': instanceToken
+        }
+      });
+
+      if (qrRes.ok) {
+        const qrData = await qrRes.json();
+        let code = qrData.data?.QRCode ?? "";
+        if (code && code.length > 50) {
+          if (!code.startsWith('data:')) code = `data:image/png;base64,${code}`;
+          qrCode = code;
+        }
+      }
     }
 
-    const statusData = JSON.parse(statusBody);
-
-    const isConnected = statusData.status?.connected === true;
-    const instanceStatus = statusData.instance?.status ?? 'unknown';
-    const qrCode = statusData.instance?.qrcode ?? null;
-    const pairingCode = statusData.instance?.paircode ?? null;
-
-    // Atualizar status no banco se mudou
-    if (isConnected && config.connection_status !== 'open') {
-      await supabase
-        .from('evolution_config')
-        .update({ connection_status: 'open' })
-        .eq('user_id', user.id);
-    } else if (!isConnected && qrCode && config.connection_status !== 'connecting') {
-      await supabase
-        .from('evolution_config')
-        .update({ connection_status: 'connecting', qr_code: qrCode })
-        .eq('user_id', user.id);
-    }
+    // 3. ATUALIZAR BANCO
+    const connection_status = isLoggedIn ? 'connected' : (isConnected ? 'connecting' : 'disconnected');
+    
+    await supabase.from('evolution_config').update({
+      connection_status,
+      qr_code: isLoggedIn ? null : qrCode,
+      updated_at: new Date().toISOString()
+    }).eq('user_id', user.id);
 
     return new Response(
       JSON.stringify({
         success: true,
         connected: isConnected,
-        instanceStatus,
-        qrCode,
-        pairingCode,
-        data: statusData,
+        loggedIn: isLoggedIn,
+        qrCode: isLoggedIn ? null : qrCode,
+        status: connection_status
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error: any) {
-    console.error('[evolution-status] Erro:', error.message);
+    console.error('[Master Status Error]:', error.message);
     return new Response(
-      JSON.stringify({ success: false, message: error.message }),
+      JSON.stringify({ success: false, error: error.message }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

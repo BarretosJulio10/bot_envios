@@ -1,10 +1,7 @@
 /**
- * Edge Function: test-connection (Uazapi 2.0.1)
- * 
- * Endpoint Uazapi: GET /instance/status
- * Header: token (token da instância)
- * 
- * Verifica se a instância do usuário está conectada ao WhatsApp.
+ * Edge Function: test-connection (Fzap v1.23.0)
+ * Endpoint Fzap: GET /session/status  (era GET /instance/status)
+ * Header: token: <instance_token>
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -32,7 +29,6 @@ Deno.serve(async (req: Request) => {
     const { data: { user }, error: userError } = await supabase.auth.getUser(jwt);
     if (userError || !user) throw new Error('Não autorizado');
 
-    // Buscar config incluindo o token da instância
     const { data: config, error: configError } = await supabase
       .from('evolution_config')
       .select('instance_id, token, base_url')
@@ -41,7 +37,7 @@ Deno.serve(async (req: Request) => {
 
     if (configError || !config) {
       return new Response(
-        JSON.stringify({ success: false, message: 'Configure sua instância Uazapi primeiro.' }),
+        JSON.stringify({ success: false, message: 'Configure sua instância Fzap primeiro.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -53,18 +49,15 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const uazapiUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
-    if (!uazapiUrl) throw new Error('URL da Uazapi não configurada nos Secrets');
+    const fzapUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
+    if (!fzapUrl) throw new Error('URL da Fzap não configurada nos Secrets');
 
-    console.log(`[test-connection] Testando conexão de: ${config.instance_id}`);
+    console.log(`[test-connection] Testando conexão: ${config.instance_id}`);
 
-    // GET /instance/status — usa o token da instância
-    const res = await fetch(`${uazapiUrl}/instance/status`, {
+    // GET /session/status (era GET /instance/status)
+    const res = await fetch(`${fzapUrl}/session/status`, {
       method: 'GET',
-      headers: {
-        'token': config.token,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'token': config.token, 'Content-Type': 'application/json' },
     });
 
     const body = await res.text();
@@ -78,7 +71,8 @@ Deno.serve(async (req: Request) => {
     }
 
     const data = JSON.parse(body);
-    const isConnected = data.status?.connected === true;
+    // Fzap: loggedIn = WhatsApp autenticado
+    const isConnected = data.data?.loggedIn === true;
 
     return new Response(
       JSON.stringify({
@@ -87,7 +81,7 @@ Deno.serve(async (req: Request) => {
         message: isConnected
           ? '✅ WhatsApp conectado e funcionando!'
           : '⚠️ Instância encontrada, mas desconectada. Escaneie o QR Code.',
-        data,
+        data: data.data,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

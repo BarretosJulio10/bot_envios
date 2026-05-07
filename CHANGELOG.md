@@ -5,6 +5,49 @@ Formato: [MAJOR.MINOR.PATCH] - YYYY-MM-DD
 
 ---
 
+## [2.1.0] - 2026-05-07
+
+### Added
+- Migração completa da infraestrutura de WhatsApp para **Fzap API** (v1.23.0).
+- Implementação de tokens curtos (12 caracteres) para sessões, visando maior compatibilidade com headers HTTP da Fzap.
+- Suporte a múltiplos headers de autenticação (`token` e `apikey`) nas requisições de sessão.
+
+### Fixed
+- Erro 405 (Method Not Allowed) ao criar instância: Corrigido apontamento de `EVOLUTION_API_URL` nos Secrets do Supabase.
+- Erro 409 (Conflict): Resolvido através da geração de tokens únicos obrigatórios na criação do usuário/instância.
+- Polling de QR Code: Ajustado para capturar o código mesmo em status "Connecting", contornando o delay de inicialização do websocket.
+
+### Security
+- Configuração de `global_apikay` (Admin Token) protegida como Secret no Supabase.
+
+---
+
+## [1.3.0] - 2026-05-07
+
+### Added
+- **Migração para Fzap API (v1.23.0)**
+  - **Contexto da mudança:** Substituição completa da infraestrutura Uazapi pela Fzap, mantendo o frontend intacto.
+  - **Justificativa técnica:** Melhor escalabilidade e separação de endpoints por tipo de mídia exigidos pela Fzap.
+  - **Configuração Fzap:**
+    - **API de WhatsApp**: Fzap API (v1.23.0)
+    - **URL Base**: `https://fzap.pagoupix.com.br`
+    - **Autenticação**:
+      - Global: `global_apikay` (Admin Token) para criação de instâncias.
+      - Instância: Token alfanumérico curto (12 chars) gerado em cada conexão.
+    - **Fluxo de Conexão**: `POST /admin/users` -> `POST /session/connect` -> `GET /session/qr`.
+    - **Polling**: Realizado pela função `evolution-status` que busca o QR Code se `loggedIn` for falso.
+  - **Impacto em APIs:** 
+    - 6 Edge Functions refatoradas e deployadas no Supabase (projeto uvvaxwtumuabfklccjgd).
+    - `evolution-create-instance`: Alterado para usar `POST /admin/users` (com Authorization: ADMIN_TOKEN) + `POST /session/connect` + `GET /session/qr`.
+    - `evolution-status` / `test-connection`: Atualizados para verificar `GET /session/status` e o campo `loggedIn`.
+    - `evolution-reset-instance`: Atualizado para `POST /session/disconnect` e `POST /session/reset`.
+    - `fetch-groups`: Lógica de parsing ajustada para lidar com a resposta do `GET /group/list`.
+    - `send-messages` / `send-group-messages`: Modularização dos envios (`/chat/send/image`, `/chat/send/video`, etc.) usando novo payload (`phone`, `caption`, `body`).
+  - **Impacto no banco de dados:** Nenhum estrutural. O campo `token` da tabela `evolution_config` armazena o token de sessão retornado pela Fzap na criação do usuário.
+  - **Impacto em regras de negócio:** Fluxos de polling de QR Code ajustados para respeitar a assincronicidade da API Fzap (QR demora alguns segundos para ser gerado).
+
+---
+
 ## [1.2.0] - 2026-04-08
 
 ### Added

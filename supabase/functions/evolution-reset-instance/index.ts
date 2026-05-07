@@ -1,14 +1,16 @@
 /**
- * Edge Function: evolution-reset-instance (Uazapi 2.0.1)
+ * Edge Function: evolution-reset-instance (Fzap v1.23.0)
  *
  * Responsabilidades:
- * 1. Desconectar a instância na Uazapi via POST /instance/disconnect
- * 2. Limpar o estado no banco (qr_code, instance_created, connection_status)
- * 3. Retornar sucesso para o frontend reiniciar o fluxo do zero
+ * 1. Desconectar a instância na Fzap via POST /session/disconnect
+ * 2. Fallback: POST /session/reset (se disconnect falhar)
+ * 3. Limpar o estado no banco (qr_code, instance_created, connection_status, token)
+ * 4. Retornar sucesso para o frontend reiniciar o fluxo do zero
  *
- * Endpoints Uazapi utilizados:
- *   POST /instance/disconnect  → Header: token  → Encerra sessão, exige novo QR
- *   POST /instance/reset       → Header: token  → Reset controlado do runtime (fallback)
+ * Diferenças Fzap vs Uazapi:
+ *   - Disconnect: /session/disconnect (era /instance/disconnect)
+ *   - Reset fallback: /session/reset (era /instance/reset)
+ *   - Headers: token: <instance_token>  (mesmo da Uazapi ✅)
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -45,7 +47,7 @@ Deno.serve(async (req: Request) => {
       .single();
 
     if (configError || !config) {
-      // Sem config: limpar banco e retornar — permite começar do zero
+      // Sem config: estado já limpo, pode criar nova instância
       console.log('[reset-instance] Sem config no banco. Nada a desconectar.');
       return new Response(
         JSON.stringify({ success: true, message: 'Estado limpo. Pode criar uma nova instância.' }),
@@ -53,15 +55,16 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const uazapiUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
+    const fzapUrl      = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
     const instanceToken = config.token;
 
-    // ── Tentar desconectar na Uazapi (melhor esforço) ─────────────────────
-    if (uazapiUrl && instanceToken) {
+    // ── Tentar desconectar na Fzap (melhor esforço) ────────────────────────
+    if (fzapUrl && instanceToken) {
       try {
         console.log(`[reset-instance] Desconectando instância: ${config.instance_id}`);
 
-        const disconnectRes = await fetch(`${uazapiUrl}/instance/disconnect`, {
+        // POST /session/disconnect  (era POST /instance/disconnect)
+        const disconnectRes = await fetch(`${fzapUrl}/session/disconnect`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -72,10 +75,12 @@ Deno.serve(async (req: Request) => {
         const disconnectBody = await disconnectRes.text();
         console.log(`[reset-instance] Disconnect: ${disconnectRes.status} ${disconnectBody.substring(0, 150)}`);
 
-        // Se disconnect falhou (ex: instância já inexistente), tentar reset como fallback
+        // Se disconnect falhou, tentar /session/reset como fallback
         if (!disconnectRes.ok) {
-          console.warn('[reset-instance] Disconnect falhou. Tentando reset...');
-          const resetRes = await fetch(`${uazapiUrl}/instance/reset`, {
+          console.warn('[reset-instance] Disconnect falhou. Tentando /session/reset...');
+
+          // POST /session/reset  (era POST /instance/reset)
+          const resetRes = await fetch(`${fzapUrl}/session/reset`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -84,12 +89,12 @@ Deno.serve(async (req: Request) => {
           });
           const resetBody = await resetRes.text();
           console.log(`[reset-instance] Reset: ${resetRes.status} ${resetBody.substring(0, 150)}`);
-          // Não lançar erro aqui — mesmo que o reset/disconnect falhe,
-          // limpamos o banco para permitir nova tentativa
+          // Mesmo que falhe, continuamos para limpar o banco
         }
+
       } catch (apiErr: any) {
-        // Erro de rede com a Uazapi — logar mas continuar para limpar o banco
-        console.error('[reset-instance] Erro ao chamar Uazapi (ignorado):', apiErr.message);
+        // Erro de rede — logar mas continuar limpando o banco
+        console.error('[reset-instance] Erro ao chamar Fzap (ignorado):', apiErr.message);
       }
     }
 

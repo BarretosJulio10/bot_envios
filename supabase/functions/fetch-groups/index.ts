@@ -1,3 +1,11 @@
+/**
+ * Edge Function: fetch-groups (Fzap v1.23.0)
+ *
+ * Endpoint Fzap: GET /group/list  (mesmo path da Uazapi ✅)
+ * Header: token: <instance_token>  (mesmo da Uazapi ✅)
+ * Mudança: parsing da resposta (data.[] ao invés de groups.[])
+ */
+
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
@@ -22,72 +30,65 @@ Deno.serve(async (req) => {
     );
 
     const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
-    if (userError || !user) {
-      throw new Error('Não autorizado');
-    }
+    if (userError || !user) throw new Error('Não autorizado');
 
-    // Buscar configuração do Evolution
     const { data: config, error: configError } = await supabaseClient
       .from('evolution_config')
       .select('*')
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config) {
-      throw new Error('Configuração não encontrada');
-    }
+    if (configError || !config) throw new Error('Configuração não encontrada');
 
-    const evolutionUrl = Deno.env.get('EVOLUTION_API_URL');
-    const evolutionToken = Deno.env.get('global_apikay');
+    const fzapUrl = Deno.env.get('EVOLUTION_API_URL');
+    if (!fzapUrl) throw new Error('EVOLUTION_API_URL não configurada');
 
-    if (!evolutionUrl || !evolutionToken) {
-      throw new Error('Variáveis de ambiente Evolution não configuradas');
-    }
+    if (!config.token) throw new Error('Token da instância não encontrado. Reconecte sua instância.');
 
-    const apiToken = config.api_key || evolutionToken;
+    console.log(`[fetch-groups] Buscando grupos de ${fzapUrl}/group/list`);
 
-    console.log(`Fetching groups from ${evolutionUrl}/group/list`);
-
-    // Buscar grupos do WhatsApp (Uazapi)
-    const response = await fetch(
-      `${evolutionUrl}/group/list`,
-      {
-        method: 'GET',
-        headers: {
-          'token': config.token || evolutionToken,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
+    // GET /group/list — mesmo endpoint da Uazapi
+    const response = await fetch(`${fzapUrl}/group/list`, {
+      method: 'GET',
+      headers: {
+        'token': config.token,
+        'Content-Type': 'application/json',
+      },
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Uazapi API error:', errorText);
+      console.error('[fetch-groups] Fzap error:', errorText);
       throw new Error(`Erro ao buscar grupos: ${response.status}`);
     }
 
     const result = await response.json();
-    // Uazapi envelopa no campo "groups"
-    const groupsRaw = Array.isArray(result) ? result : (result.groups || []);
-    
-    console.log(`Found ${groupsRaw.length} groups raw`);
+
+    // Fzap pode retornar array direto, em data[], ou em groups[]
+    let groupsRaw: any[] = [];
+    if (Array.isArray(result)) {
+      groupsRaw = result;
+    } else if (Array.isArray(result.data)) {
+      groupsRaw = result.data;
+    } else if (Array.isArray(result.groups)) {
+      groupsRaw = result.groups;
+    }
+
+    console.log(`[fetch-groups] ${groupsRaw.length} grupos encontrados`);
 
     const formattedGroups = groupsRaw.map((g: any) => ({
-      id: g.JID || g.id,
-      name: g.Name || g.subject || 'Sem nome',
-      participants: g.Participants?.length || 0,
+      id: g.id || g.JID || g.jid,
+      name: g.name || g.subject || g.Name || 'Sem nome',
+      participants: g.participantsCount || g.Participants?.length || g.participants?.length || 0,
     }));
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        groups: formattedGroups,
-      }),
+      JSON.stringify({ success: true, groups: formattedGroups }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error: any) {
-    console.error('Error:', error);
+    console.error('[fetch-groups] Erro:', error);
     return new Response(
       JSON.stringify({ success: false, error: error.message }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
