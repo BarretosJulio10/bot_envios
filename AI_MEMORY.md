@@ -1,56 +1,98 @@
-# AI MEMORY - Bot Envios Fzap
+# AI MEMORY - Bot Envios WhatsApp
 
 ## Contexto do Projeto
-Sistema de envios em massa (WhatsApp) migrado da Uazapi para a **Fzap API (v1.23.0)**.
+Sistema de envios em massa (WhatsApp) utilizando **Evolution Go API** (docs.evolutionfoundation.com.br/evolution-go).
 O sistema utiliza Supabase (Edge Functions + Database + Storage) e projeto atual: `uvvaxwtumuabfklccjgd`.
+GitHub: `https://github.com/BarretosJulio10/bot_envios.git`
 
-## Regra de Ouro (Sempre Seguir)
-1. **FZAP APENAS:** Nunca use termos ou lógica relacionados à "Evolution API" ou "Uazapi" nas novas implementações. 
-2. **AUTENTICAÇÃO:** 
-   - `Authorization` (Header): Usado apenas para operações administrativas na rota `/admin/users` (ex: criar instância). Vem do secret `global_apikay`.
-   - `token` (Header): Usado para TODAS AS OUTRAS operações da instância (ex: conectar, enviar mensagem, verificar status). Vem da coluna `token` na tabela `evolution_config` (salvo durante a criação).
-3. **ENDPOINTS CRÍTICOS (Fzap v1.23.0):**
-   - `POST /admin/users`: Requer `Authorization: <ADMIN_TOKEN>`. Cria a instância e retorna o `token` de sessão no body.
-   - `POST /session/connect`: Requer `token: <session_token>`. Inicia a conexão websocket.
-   - `GET /session/qr`: Requer `token`. Obtém o QR Code em Base64 (assíncrono, pode requerer polling).
-   - `GET /session/status`: Requer `token`. Verifica status (logado = `data.loggedIn === true`).
-   - `POST /session/disconnect` e `POST /session/reset`: Usados para encerrar e resetar sessões ativas.
-   - Envios de mídia usam endpoints separados (`/chat/send/image`, `/chat/send/video`, etc.) passando propriedades tipadas (ex: `phone`, `caption`, `image`).
+## ⚠️ REGRA DE OURO — Nunca Esquecer
 
-## Edge Functions Existentes
+### Autenticação Evolution Go
+A Evolution Go usa **APENAS o header `apikey`** — não existe header `token` separado.
+- **Admin routes** (criar instância): `apikey = ADMIN_KEY` (Secret `global_apikay`)
+- **Instance routes** (conectar, QR, enviar, status): `apikey = INSTANCE_TOKEN` (coluna `token` da tabela `evolution_config`)
+
+### Campo do QR Code — Bug Histórico
+- ❌ ERRADO: `data.QRCode` (Fzap antigo)
+- ✅ CERTO:  `data.Qrcode` (Q maiúsculo, r/c minúsculo — Evolution Go)
+
+### Campos de Status — PascalCase
+- ❌ ERRADO: `data.connected`, `data.loggedIn`
+- ✅ CERTO:  `data.Connected`, `data.LoggedIn`
+
+---
+
+## Infraestrutura (2026-05-08)
+
+### Servidor Evolution Go (Self-Hosted)
+- **Manager URL**: `https://129.121.54.97/manager` (painel administrativo web)
+- **API Base URL**: `https://129.121.54.97` (Secret: `EVOLUTION_API_URL`)
+- **Admin Key**: configurado no Secret `global_apikay`
+
+> ⚠️ ATENÇÃO: O Admin Key foi exposto acidentalmente. Regenerar no painel `/manager` e atualizar o Secret `global_apikay` no Supabase assim que possível.
+
+### Supabase
+- **Projeto**: `uvvaxwtumuabfklccjgd`
+- **Secrets configurados**:
+  - `EVOLUTION_API_URL` = `https://129.121.54.97`
+  - `global_apikay` = Admin Key do Evolution Go
+
+---
+
+## Endpoints Corretos (Evolution Go)
+
+| Operação | Método | Endpoint | apikey |
+|---|---|---|---|
+| Criar instância | POST | `/instance/create` | ADMIN KEY |
+| Conectar sessão | POST | `/instance/connect` | INSTANCE TOKEN |
+| Obter QR Code | GET | `/instance/qr` → `data.Qrcode` | INSTANCE TOKEN |
+| Status | GET | `/instance/status` → `data.Connected`, `data.LoggedIn` | INSTANCE TOKEN |
+| Logout | DELETE | `/instance/logout` | INSTANCE TOKEN |
+| Enviar texto | POST | `/send/text` → `{ number, text }` | INSTANCE TOKEN |
+| Enviar mídia | POST | `/send/media` → `{ number, url, type, caption, filename }` | INSTANCE TOKEN |
+| Listar grupos | GET | `/group/list` → `data[].JID`, `data[].Name` | INSTANCE TOKEN |
+
+---
+
+## Edge Functions (todas deployadas)
+
 | Função | Propósito |
 |---|---|
-| `evolution-create-instance` | Cria instância (/admin/users) + conecta + gera QR Code (/session/qr) |
-| `evolution-status` | Polling de status (GET /session/status) |
-| `evolution-reset-instance` | Desconecta + limpa banco (reset do fluxo) |
-| `send-messages` | Envio individual (refatorada para múltiplos endpoints de mídia) |
-| `send-group-messages` | Envio para grupos (usando /chat/send/list, etc) |
-| `fetch-groups` | Lista grupos (GET /group/list) |
-| `test-connection` | Testa conectividade (GET /session/status) |
-| `cleanup-files` | Limpeza de arquivos |
+| `evolution-create-instance` | POST /instance/create + connect + polling QR /instance/qr |
+| `evolution-status` | GET /instance/status + atualiza QR /instance/qr |
+| `evolution-reset-instance` | DELETE /instance/logout + limpa banco |
+| `send-messages` | POST /send/text ou /send/media |
+| `send-group-messages` | POST /send/text ou /send/media para grupos |
+| `fetch-groups` | GET /group/list com apikey = instance token |
+| `test-connection` | GET /instance/status (Connected, LoggedIn) |
+| `cleanup-files` | Limpeza de arquivos do Storage |
+
+---
 
 ## Fluxo de Conexão WhatsApp
+
 ```
-form → [Conectar WhatsApp] → evolution-create-instance → step: qrcode
-qrcode → [polling a cada 3s] → evolution-status → step: connected (auto-fecha)
-qrcode → [Limpar e Gerar Novo QR] → evolution-reset-instance → step: form
-qrcode → [Voltar] → evolution-reset-instance → step: form
+[Conectar WhatsApp]
+       ↓
+evolution-create-instance
+  1. POST /instance/create (apikey = ADMIN KEY)  → retorna data.token
+  2. POST /instance/connect (apikey = INSTANCE TOKEN)
+  3. polling GET /instance/qr (até 8 tentativas, 2s cada) → data.Qrcode
+       ↓
+[QR Code renderizado no modal]
+       ↓
+[polling a cada 3s] → evolution-status
+  GET /instance/status → data.LoggedIn === true
+       ↓
+[WhatsApp conectado — modal fecha]
 ```
 
-## Reset de Instância (evolution-reset-instance)
-- Chama `POST /session/disconnect` na Fzap.
-- Fallback: `POST /session/reset` se disconnect falhar.
+## Reset de Instância
+- `DELETE /instance/logout` com `apikey = INSTANCE TOKEN`
 - Limpa banco: `instance_created=false`, `qr_code=null`, `connection_status='disconnected'`, `token=''`
-- É tolerante a falhas de rede (limpa banco mesmo se API não responder).
+- Tolerante a falhas (limpa banco mesmo se API não responder)
 
-## Estado Atual (2026-05-07)
-O sistema foi migrado com sucesso para a **Fzap API (v1.23.0)**.
-- **Backend**: 8 Supabase Edge Functions deployadas no projeto `uvvaxwtumuabfklccjgd`.
-- **Secrets**: `EVOLUTION_API_URL` e `global_apikay` configurados.
-- **Tokens**: Sistema utiliza tokens curtos de 12 caracteres para máxima compatibilidade.
-- **Status**: Instâncias sendo criadas com sucesso (Status: "Conectando"). QRCode agora é buscado agressivamente durante o polling.
-
-### Configurações Importantes
-- **Admin Token**: `P3BpI2Cz1nUmFOXdHOeuGUzk` (Secret: `global_apikay`).
-- **Base URL**: `https://fzap.pagoupix.com.br` (Secret: `EVOLUTION_API_URL`).
-- **Headers**: Usar `Authorization: <admin_token>` para rotas `/admin` e `token: <inst_token>` (ou `apikey`) para rotas de sessão.
+## Histórico de Migrações
+- v1.x: Uazapi API
+- v2.0: Fzap API (fzap.pagoupix.com.br) — URL/chaves incorretas
+- v2.2.0 (2026-05-08): Evolution Go self-hosted (129.121.54.97) — VERSÃO ATUAL ✅
