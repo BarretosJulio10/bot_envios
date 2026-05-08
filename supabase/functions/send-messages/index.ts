@@ -1,18 +1,13 @@
 /**
- * Edge Function: send-messages (Fzap v1.23.0)
+ * Edge Function: send-messages (Evolution Go API)
  *
- * Diferenças Fzap vs Uazapi:
- *   - Endpoints separados por tipo de mídia (era /send/media único):
- *       image   → POST /chat/send/image    campo: image
- *       video   → POST /chat/send/video    campo: video
- *       audio   → POST /chat/send/audio    campo: audio
- *       doc     → POST /chat/send/document campo: document
- *       sticker → POST /chat/send/sticker  campo: sticker
- *   - Campo destinatário: phone (era number)
- *   - Campo legenda: caption (era text)
- *   - Campo arquivo: tipado (era file)
- *   - Header: token: <instance_token>  (igual ✅)
+ * Endpoints corretos:
+ *   texto: POST /send/text   | body: { number, text }
+ *   mídia: POST /send/media  | body: { number, url, type, caption, filename }
+ *
+ * Autenticação: apikey = INSTANCE TOKEN (não mais "token")
  */
+
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -42,8 +37,8 @@ Deno.serve(async (req) => {
     const { action } = await req.json();
     console.log(`Action received: ${action} for user: ${user.id}`);
 
-    const fzapUrl = Deno.env.get('EVOLUTION_API_URL');
-    if (!fzapUrl) throw new Error('EVOLUTION_API_URL não configurada');
+    const apiUrl = Deno.env.get('EVOLUTION_API_URL');
+    if (!apiUrl) throw new Error('EVOLUTION_API_URL não configurada');
 
     const { data: config, error: configError } = await supabase
       .from('evolution_config')
@@ -52,12 +47,13 @@ Deno.serve(async (req) => {
       .single();
 
     if (configError || !config || !config.instance_id) {
-      throw new Error('Configuração da Fzap não encontrada. Conecte sua instância primeiro.');
+      throw new Error('Configuração não encontrada. Conecte sua instância primeiro.');
     }
 
     if (!config.token) {
-      throw new Error('Token da instância não encontrado. Reconecte sua instância Fzap no painel de configuração.');
+      throw new Error('Token da instância não encontrado. Reconecte sua instância.');
     }
+    // Evolution Go: apikey = INSTANCE TOKEN
     const instanceToken = config.token;
 
     if (action === 'pause') {
@@ -173,54 +169,34 @@ Deno.serve(async (req) => {
           else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'wma', 'opus'].includes(ext)) mediaType = 'audio';
           else if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar', '7z', 'csv'].includes(ext)) mediaType = 'document';
 
-          // ──────────────────────────────────────────────────────────────────
-          // Fzap: endpoints separados por tipo (era /send/media único na Uazapi)
-          // Campos: phone (era number), caption (era text), arquivo tipado (era file)
-          // ──────────────────────────────────────────────────────────────────
+          // Evolution Go: endpoint único /send/media para todos os tipos de mídia
+          // Campo "number" (não "phone"), "url", "type", "caption", "filename"
           let endpoint: string;
           let payload: any;
 
           if (mediaType === 'sticker') {
-            endpoint = `${fzapUrl}/chat/send/sticker`;
-            payload = { phone: message.phone, sticker: signedUrl };
+            endpoint = `${apiUrl}/send/media`;
+            payload = { number: message.phone, url: signedUrl, type: 'sticker', filename: message.filename || 'sticker' };
           } else if (mediaType === 'image') {
-            endpoint = `${fzapUrl}/chat/send/image`;
-            payload = {
-              phone: message.phone,
-              image: signedUrl,
-              caption: message.message_text || '',
-              fileName: message.filename || 'imagem',
-            };
+            endpoint = `${apiUrl}/send/media`;
+            payload = { number: message.phone, url: signedUrl, type: 'image', caption: message.message_text || '', filename: message.filename || 'imagem' };
           } else if (mediaType === 'video') {
-            endpoint = `${fzapUrl}/chat/send/video`;
-            payload = {
-              phone: message.phone,
-              video: signedUrl,
-              caption: message.message_text || '',
-              fileName: message.filename || 'video',
-            };
+            endpoint = `${apiUrl}/send/media`;
+            payload = { number: message.phone, url: signedUrl, type: 'video', caption: message.message_text || '', filename: message.filename || 'video' };
           } else if (mediaType === 'audio') {
-            endpoint = `${fzapUrl}/chat/send/audio`;
-            payload = {
-              phone: message.phone,
-              audio: signedUrl,
-            };
+            endpoint = `${apiUrl}/send/media`;
+            payload = { number: message.phone, url: signedUrl, type: 'audio', filename: message.filename || 'audio' };
           } else {
             // document (default)
-            endpoint = `${fzapUrl}/chat/send/document`;
-            payload = {
-              phone: message.phone,
-              document: signedUrl,
-              fileName: message.filename || 'arquivo',
-              caption: message.message_text || '',
-            };
+            endpoint = `${apiUrl}/send/media`;
+            payload = { number: message.phone, url: signedUrl, type: 'document', caption: message.message_text || '', filename: message.filename || 'arquivo' };
           }
 
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'token': instanceToken,
+              'apikey': instanceToken, // Evolution Go usa apikey, não token
             },
             body: JSON.stringify(payload),
           });

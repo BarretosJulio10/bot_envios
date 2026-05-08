@@ -40,18 +40,18 @@ Deno.serve(async (req) => {
 
     if (configError || !config) throw new Error('Configuração não encontrada');
 
-    const fzapUrl = Deno.env.get('EVOLUTION_API_URL');
-    if (!fzapUrl) throw new Error('EVOLUTION_API_URL não configurada');
+    const apiUrl = Deno.env.get('EVOLUTION_API_URL');
+    if (!apiUrl) throw new Error('EVOLUTION_API_URL não configurada');
 
     if (!config.token) throw new Error('Token da instância não encontrado. Reconecte sua instância.');
 
-    console.log(`[fetch-groups] Buscando grupos de ${fzapUrl}/group/list`);
+    console.log(`[fetch-groups] GET ${apiUrl}/group/list`);
 
-    // GET /group/list — mesmo endpoint da Uazapi
-    const response = await fetch(`${fzapUrl}/group/list`, {
+    // GET /group/list | apikey = INSTANCE TOKEN (Evolution Go)
+    const response = await fetch(`${apiUrl}/group/list`, {
       method: 'GET',
       headers: {
-        'token': config.token,
+        'apikey': config.token, // Evolution Go: apikey, não token
         'Content-Type': 'application/json',
       },
     });

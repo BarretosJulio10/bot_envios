@@ -1,7 +1,12 @@
-
 /**
- * Edge Function: evolution-status (Master Fullstack Edition)
- * Fluxo: Status Check -> QR Polling (if not logged in) -> DB Update
+ * Edge Function: whatsapp-status (Evolution Go API)
+ *
+ * GET /instance/status  |  apikey = INSTANCE TOKEN
+ * GET /instance/qr      |  apikey = INSTANCE TOKEN
+ *
+ * Campos de resposta:
+ *   status:  data.Connected, data.LoggedIn  (ambos com inicial maiúscula)
+ *   QR Code: data.Qrcode                    (Q maiúsculo, r/c minúsculo)
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -22,74 +27,92 @@ Deno.serve(async (req: Request) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
+    // Autenticar usuário
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) throw new Error('Sem header de autorização');
-
+    if (!authHeader) throw new Error('Header Authorization ausente');
     const jwt = authHeader.replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabase.auth.getUser(jwt);
-    if (userError || !user) throw new Error('Não autorizado');
+    if (userError || !user) throw new Error('Usuário não autorizado');
 
+    // Buscar configuração do banco
     const { data: config, error: configError } = await supabase
       .from('evolution_config')
-      .select('*')
+      .select('instance_id, token, base_url, connection_status, qr_code')
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config) throw new Error('Configuração não encontrada');
+    if (configError || !config) {
+      throw new Error('Configuração da instância não encontrada. Configure primeiro.');
+    }
 
-    const fzapUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
-    const adminToken = Deno.env.get('global_apikay');
+    if (!config.token) {
+      throw new Error('Token da instância não encontrado. Reconecte a instância.');
+    }
+
+    const apiUrl       = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
     const instanceToken = config.token;
 
-    if (!fzapUrl || !adminToken || !instanceToken) {
-      throw new Error('Configurações de API incompletas (URL/Token)');
-    }
+    if (!apiUrl) throw new Error('URL da API não configurada');
 
-    // 1. CHECAR STATUS DA SESSÃO
-    const statusRes = await fetch(`${fzapUrl}/session/status`, {
+    console.log(`[whatsapp-status] Verificando status: ${config.instance_id}`);
+
+    // ── GET /instance/status  |  apikey = INSTANCE TOKEN ───────────────────
+    const statusRes = await fetch(`${apiUrl}/instance/status`, {
       method: 'GET',
-      headers: {
-        'apikey': adminToken,
-        'token': instanceToken
-      }
+      headers: { 'apikey': instanceToken },
     });
 
-    const statusData = await statusRes.json();
-    console.log(`[Master Status] Resposta Status:`, JSON.stringify(statusData));
+    const statusText = await statusRes.text();
+    console.log(`[whatsapp-status] Status response (${statusRes.status}): ${statusText.substring(0, 200)}`);
 
-    const isLoggedIn = statusData.data?.loggedIn === true;
-    const isConnected = statusData.data?.connected === true;
+    // Campos com inicial MAIÚSCULA na Evolution Go: Connected, LoggedIn
+    let isConnected = false;
+    let isLoggedIn  = false;
 
-    let qrCode = config.qr_code;
-
-    // 2. SE NÃO ESTIVER LOGADO, BUSCAR QR CODE ATUALIZADO
-    if (!isLoggedIn) {
-      const qrRes = await fetch(`${fzapUrl}/session/qr`, {
-        method: 'GET',
-        headers: {
-          'apikey': adminToken,
-          'token': instanceToken
-        }
-      });
-
-      if (qrRes.ok) {
-        const qrData = await qrRes.json();
-        let code = qrData.data?.QRCode ?? "";
-        if (code && code.length > 50) {
-          if (!code.startsWith('data:')) code = `data:image/png;base64,${code}`;
-          qrCode = code;
-        }
-      }
+    if (statusRes.ok) {
+      const statusData = JSON.parse(statusText);
+      isConnected = statusData.data?.Connected === true;
+      isLoggedIn  = statusData.data?.LoggedIn  === true;
     }
 
-    // 3. ATUALIZAR BANCO
-    const connection_status = isLoggedIn ? 'connected' : (isConnected ? 'connecting' : 'disconnected');
-    
-    await supabase.from('evolution_config').update({
-      connection_status,
-      qr_code: isLoggedIn ? null : qrCode,
-      updated_at: new Date().toISOString()
-    }).eq('user_id', user.id);
+    // ── GET /instance/qr  |  apikey = INSTANCE TOKEN ───────────────────────
+    // Campo: data.Qrcode (Q maiúsculo, r/c minúsculo!)
+    let qrCode: string | null = config.qr_code ?? null;
+
+    if (!isLoggedIn) {
+      const qrRes = await fetch(`${apiUrl}/instance/qr`, {
+        method: 'GET',
+        headers: { 'apikey': instanceToken },
+      });
+
+      const qrText = await qrRes.text();
+      console.log(`[whatsapp-status] QR response (${qrRes.status}): ${qrText.substring(0, 100)}...`);
+
+      if (qrRes.ok) {
+        const qrData = JSON.parse(qrText);
+        const code = qrData.data?.Qrcode ?? '';
+        if (code && code.length > 50) {
+          qrCode = code.startsWith('data:') ? code : `data:image/png;base64,${code}`;
+          console.log(`[whatsapp-status] ✅ QR Code atualizado!`);
+        }
+      }
+    } else {
+      // Logado: limpar QR Code do banco
+      qrCode = null;
+      console.log(`[whatsapp-status] ✅ WhatsApp conectado e logado!`);
+    }
+
+    // ── Atualizar banco ─────────────────────────────────────────────────────
+    const newStatus = isLoggedIn ? 'connected' : (isConnected ? 'connecting' : 'disconnected');
+
+    await supabase
+      .from('evolution_config')
+      .update({
+        connection_status: newStatus,
+        qr_code: isLoggedIn ? null : qrCode,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', user.id);
 
     return new Response(
       JSON.stringify({
@@ -97,13 +120,13 @@ Deno.serve(async (req: Request) => {
         connected: isConnected,
         loggedIn: isLoggedIn,
         qrCode: isLoggedIn ? null : qrCode,
-        status: connection_status
+        status: newStatus,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error: any) {
-    console.error('[Master Status Error]:', error.message);
+    console.error('[whatsapp-status] Erro:', error.message);
     return new Response(
       JSON.stringify({ success: false, error: error.message }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

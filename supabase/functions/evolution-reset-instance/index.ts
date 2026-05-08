@@ -1,16 +1,12 @@
 /**
- * Edge Function: evolution-reset-instance (Fzap v1.23.0)
+ * Edge Function: whatsapp-reset-instance (Evolution Go API)
  *
- * Responsabilidades:
- * 1. Desconectar a instância na Fzap via POST /session/disconnect
- * 2. Fallback: POST /session/reset (se disconnect falhar)
- * 3. Limpar o estado no banco (qr_code, instance_created, connection_status, token)
- * 4. Retornar sucesso para o frontend reiniciar o fluxo do zero
+ * Fluxo de reset:
+ * 1. DELETE /instance/logout  (apikey = INSTANCE TOKEN) → logout WhatsApp
+ * 2. Limpar estado no banco
  *
- * Diferenças Fzap vs Uazapi:
- *   - Disconnect: /session/disconnect (era /instance/disconnect)
- *   - Reset fallback: /session/reset (era /instance/reset)
- *   - Headers: token: <instance_token>  (mesmo da Uazapi ✅)
+ * Nota: Mantemos a instância criada no servidor (apenas deslogamos).
+ * Para deletar completamente: DELETE /instance/delete (apikey = ADMIN KEY)
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -31,74 +27,43 @@ Deno.serve(async (req: Request) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // ── Autenticação ─────────────────────────────────────────────────────────
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) throw new Error('Sem header de autorização');
-
+    if (!authHeader) throw new Error('Header Authorization ausente');
     const jwt = authHeader.replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabase.auth.getUser(jwt);
-    if (userError || !user) throw new Error('Não autorizado');
+    if (userError || !user) throw new Error('Usuário não autorizado');
 
-    // ── Buscar config do banco ─────────────────────────────────────────────
-    const { data: config, error: configError } = await supabase
+    // Buscar config
+    const { data: config } = await supabase
       .from('evolution_config')
       .select('instance_id, token, base_url')
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config) {
-      // Sem config: estado já limpo, pode criar nova instância
-      console.log('[reset-instance] Sem config no banco. Nada a desconectar.');
-      return new Response(
-        JSON.stringify({ success: true, message: 'Estado limpo. Pode criar uma nova instância.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    // Tentar deslogar na API (best effort)
+    if (config?.token) {
+      const apiUrl       = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
+      const instanceToken = config.token;
 
-    const fzapUrl      = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
-    const instanceToken = config.token;
-
-    // ── Tentar desconectar na Fzap (melhor esforço) ────────────────────────
-    if (fzapUrl && instanceToken) {
       try {
-        console.log(`[reset-instance] Desconectando instância: ${config.instance_id}`);
+        console.log(`[whatsapp-reset] Fazendo logout: ${config.instance_id}`);
 
-        // POST /session/disconnect  (era POST /instance/disconnect)
-        const disconnectRes = await fetch(`${fzapUrl}/session/disconnect`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'token': instanceToken,
-          },
+        // DELETE /instance/logout  |  apikey = INSTANCE TOKEN
+        const logoutRes = await fetch(`${apiUrl}/instance/logout`, {
+          method: 'DELETE',
+          headers: { 'apikey': instanceToken },
         });
 
-        const disconnectBody = await disconnectRes.text();
-        console.log(`[reset-instance] Disconnect: ${disconnectRes.status} ${disconnectBody.substring(0, 150)}`);
-
-        // Se disconnect falhou, tentar /session/reset como fallback
-        if (!disconnectRes.ok) {
-          console.warn('[reset-instance] Disconnect falhou. Tentando /session/reset...');
-
-          // POST /session/reset  (era POST /instance/reset)
-          const resetRes = await fetch(`${fzapUrl}/session/reset`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'token': instanceToken,
-            },
-          });
-          const resetBody = await resetRes.text();
-          console.log(`[reset-instance] Reset: ${resetRes.status} ${resetBody.substring(0, 150)}`);
-          // Mesmo que falhe, continuamos para limpar o banco
-        }
-
+        const logoutText = await logoutRes.text();
+        console.log(`[whatsapp-reset] Logout (${logoutRes.status}): ${logoutText.substring(0, 150)}`);
       } catch (apiErr: any) {
-        // Erro de rede — logar mas continuar limpando o banco
-        console.error('[reset-instance] Erro ao chamar Fzap (ignorado):', apiErr.message);
+        console.warn('[whatsapp-reset] Erro na API (ignorado):', apiErr.message);
       }
+    } else {
+      console.log('[whatsapp-reset] Nenhuma config no banco. Apenas limpando estado.');
     }
 
-    // ── Limpar estado no banco ─────────────────────────────────────────────
+    // Limpar banco
     const { error: dbError } = await supabase
       .from('evolution_config')
       .update({
@@ -106,15 +71,16 @@ Deno.serve(async (req: Request) => {
         qr_code: null,
         connection_status: 'disconnected',
         token: '',
+        updated_at: new Date().toISOString(),
       })
       .eq('user_id', user.id);
 
     if (dbError) {
-      console.error('[reset-instance] Erro ao limpar banco:', dbError);
-      throw new Error('Erro ao limpar estado no banco de dados');
+      console.error('[whatsapp-reset] Erro ao limpar banco:', dbError);
+      throw new Error('Erro ao limpar estado no banco');
     }
 
-    console.log(`[reset-instance] ✅ Instância ${config.instance_id} resetada para o usuário ${user.id}`);
+    console.log(`[whatsapp-reset] ✅ Instância resetada para usuário ${user.id}`);
 
     return new Response(
       JSON.stringify({
@@ -125,7 +91,7 @@ Deno.serve(async (req: Request) => {
     );
 
   } catch (error: any) {
-    console.error('[reset-instance] Erro:', error.message);
+    console.error('[whatsapp-reset] Erro:', error.message);
     return new Response(
       JSON.stringify({ success: false, error: error.message }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
