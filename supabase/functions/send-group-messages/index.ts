@@ -1,14 +1,13 @@
 /**
- * Edge Function: send-group-messages (Fzap v1.23.0)
+ * Edge Function: send-group-messages (Evolution Go API)
  *
- * Diferenças Fzap vs Uazapi:
- *   - Texto: POST /chat/send/text, campo body (era /send/text, campo text)
- *   - Mídia: endpoints separados /chat/send/{image|video|audio|document|sticker}
- *   - Lista: POST /chat/send/list, sections/rows (era /send/menu, choices)
- *   - Campo destinatário: phone (era number)
- *   - Status check: GET /session/status (era GET /instance/status)
- *   - Reconectar: POST /session/connect (era POST /instance/connect)
- *   - Header: token: <instance_token>  (igual ✅)
+ * Endpoints corretos:
+ *   texto:  POST /send/text   | body: { number, text }
+ *   mídia:  POST /send/media  | body: { number, url, type, caption, filename }
+ *   status: GET  /instance/status  | data.Connected, data.LoggedIn
+ *   reconect: POST /instance/connect
+ *
+ * Autenticação: apikey = INSTANCE TOKEN (não mais "token")
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -32,7 +31,7 @@ Deno.serve(async (req) => {
     const { data: { user }, error: userError } = await supabaseClient.auth.getUser(
       req.headers.get('Authorization')?.split(' ')[1] ?? ''
     );
-    if (userError || !user) throw new Error('Nao autorizado');
+    if (userError || !user) throw new Error('Não autorizado');
 
     const { data: config, error: configError } = await supabaseClient
       .from('evolution_config')
@@ -40,22 +39,23 @@ Deno.serve(async (req) => {
       .eq('user_id', user.id)
       .single();
 
-    if (configError || !config) throw new Error('Configuracao nao encontrada');
+    if (configError || !config) throw new Error('Configuração não encontrada');
 
-    const fzapUrl = Deno.env.get('EVOLUTION_API_URL');
-    if (!fzapUrl) throw new Error('EVOLUTION_API_URL nao definida');
+    const apiUrl = Deno.env.get('EVOLUTION_API_URL');
+    if (!apiUrl) throw new Error('EVOLUTION_API_URL não definida');
 
     if (!config.token) {
-      throw new Error('Token da instância não encontrado no banco. Reconecte sua instância Fzap no painel.');
+      throw new Error('Token da instância não encontrado. Reconecte sua instância.');
     }
+    // Evolution Go: apikey = INSTANCE TOKEN
     const apiToken = config.token;
 
-    // ── Envio para Fzap com retry automático ─────────────────────────────────
-    async function sendToFzap(endpoint: string, payload: any, retry = true): Promise<any> {
+    // ── Envio para Evolution Go com retry automático ──────────────────────────
+    async function sendToApi(endpoint: string, payload: any, retry = true): Promise<any> {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'token': apiToken,
+          'apikey': apiToken, // Evolution Go: apikey, não token
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
@@ -66,38 +66,40 @@ Deno.serve(async (req) => {
       try { result = JSON.parse(responseText); } catch { result = { error: responseText }; }
 
       if (!response.ok) {
-        if (retry && responseText.includes('no session')) {
-          console.warn('[send-group] No session. Reconectando...');
+        // Reconnect automático se sessão cair
+        if (retry && (responseText.includes('no session') || response.status === 401)) {
+          console.warn('[send-group] Sessão perdida. Reconectando...');
           await ensureSession();
           await new Promise(r => setTimeout(r, 1000));
-          return sendToFzap(endpoint, payload, false);
+          return sendToApi(endpoint, payload, false);
         }
-        throw new Error(`Fzap API ${response.status}: ${responseText}`);
+        throw new Error(`API ${response.status}: ${responseText}`);
       }
       return result;
     }
 
-    // ── Verificar e reconectar sessão (Fzap) ─────────────────────────────────
+    // ── Verificar e reconectar sessão (Evolution Go) ──────────────────────────
     async function ensureSession() {
       try {
-        // GET /session/status (era GET /instance/status)
-        const stateRes = await fetch(`${fzapUrl}/session/status`, {
+        // GET /instance/status | apikey = INSTANCE TOKEN
+        const stateRes = await fetch(`${apiUrl}/instance/status`, {
           method: 'GET',
-          headers: { 'token': apiToken },
+          headers: { 'apikey': apiToken },
         });
 
         if (stateRes.ok) {
           const stateJson = await stateRes.json();
-          const loggedIn = stateJson?.data?.loggedIn;
+          // Evolution Go: campos com inicial MAIÚSCULA
+          const loggedIn = stateJson?.data?.LoggedIn;
           if (loggedIn === true) return true;
         }
 
-        console.log('[send-group] Sessão não está logada. Tentando reconectar...');
+        console.log('[send-group] Não logado. Tentando reconectar...');
 
-        // POST /session/connect (era POST /instance/connect)
-        const connectRes = await fetch(`${fzapUrl}/session/connect`, {
+        // POST /instance/connect | apikey = INSTANCE TOKEN
+        const connectRes = await fetch(`${apiUrl}/instance/connect`, {
           method: 'POST',
-          headers: { 'token': apiToken, 'Content-Type': 'application/json' },
+          headers: { 'apikey': apiToken, 'Content-Type': 'application/json' },
           body: JSON.stringify({ immediate: true }),
         });
 
@@ -120,42 +122,10 @@ Deno.serve(async (req) => {
       let payload: any = {};
       let endpoint = '';
 
-      if (message.message_type === 'menu') {
-        // ── Lista interativa (Fzap: /chat/send/list com sections/rows) ───────
-        // Uazapi usava: /send/menu, choices: [{title, description, rowId}]
-        // Fzap usa:     /chat/send/list, sections: [{ title, rows: [{rowId, title, desc}] }]
-        endpoint = `${fzapUrl}/chat/send/list`;
-
-        let choices: any[] = [];
-        try {
-          choices = JSON.parse(message.menu_choices || '[]');
-        } catch {
-          choices = [];
-        }
-
-        // Converter choices (Uazapi) → sections/rows (Fzap)
-        payload = {
-          phone: message.group_id,           // era number
-          text: message.caption || '',        // corpo da mensagem
-          title: message.caption || '',
-          footer: message.footer_text || '',
-          buttonText: message.list_button || 'Ver opções',
-          sections: [
-            {
-              title: 'Opções',
-              rows: choices.map((c: any, idx: number) => ({
-                rowId: c.rowId || c.id || `row-${idx}`,
-                title: c.title || c.description || '',
-                desc:  c.description || c.desc || '',
-              })),
-            },
-          ],
-        };
-
-      } else if (message.image_url) {
+      if (message.image_url) {
         // ── Mensagem com mídia ──────────────────────────────────────────────
         const urlParts = message.image_url.split('/whatsapp-files/');
-        if (urlParts.length < 2) throw new Error('Caminho do arquivo invalido na URL');
+        if (urlParts.length < 2) throw new Error('Caminho do arquivo inválido na URL');
         const filePath = urlParts[1];
 
         const { data: signedData, error: signedError } = await supabaseClient
@@ -177,36 +147,29 @@ Deno.serve(async (req) => {
         else if (['mp4', 'mov', 'webm', 'm4v', 'avi', '3gp', 'mkv', 'flv', 'wmv'].includes(ext)) mediaType = 'video';
         else if (['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'opus'].includes(ext)) mediaType = 'audio';
 
-        // Fzap: endpoints separados por tipo (era /send/media único na Uazapi)
-        if (mediaType === 'sticker') {
-          endpoint = `${fzapUrl}/chat/send/sticker`;
-          payload = { phone: message.group_id, sticker: signedUrl };
-        } else if (mediaType === 'image') {
-          endpoint = `${fzapUrl}/chat/send/image`;
-          payload = { phone: message.group_id, image: signedUrl, caption: message.caption || '', fileName: filename };
-        } else if (mediaType === 'video') {
-          endpoint = `${fzapUrl}/chat/send/video`;
-          payload = { phone: message.group_id, video: signedUrl, caption: message.caption || '', fileName: filename };
-        } else if (mediaType === 'audio') {
-          endpoint = `${fzapUrl}/chat/send/audio`;
-          payload = { phone: message.group_id, audio: signedUrl };
-        } else {
-          endpoint = `${fzapUrl}/chat/send/document`;
-          payload = { phone: message.group_id, document: signedUrl, fileName: filename, caption: message.caption || '' };
-        }
+        // Evolution Go: POST /send/media com campo "number" e "type"
+        endpoint = `${apiUrl}/send/media`;
+        payload = {
+          number: message.group_id,
+          url: signedUrl,
+          type: mediaType,
+          caption: message.caption || '',
+          filename: filename,
+        };
 
       } else if (message.caption) {
         // ── Texto puro ─────────────────────────────────────────────────────
-        // Fzap: /chat/send/text, campo body (era /send/text, campo text)
-        endpoint = `${fzapUrl}/chat/send/text`;
+        // Evolution Go: POST /send/text, campo "number" e "text"
+        endpoint = `${apiUrl}/send/text`;
         payload = {
-          phone: message.group_id,   // era number
-          body: message.caption,     // era text
+          number: message.group_id,
+          text: message.caption,
         };
       }
 
       if (endpoint) {
-        await sendToFzap(endpoint, payload);
+        console.log(`[send-group] Enviando para ${message.group_id} via ${endpoint}`);
+        await sendToApi(endpoint, payload);
       }
     }
 
@@ -236,7 +199,7 @@ Deno.serve(async (req) => {
     const safeBatch = Math.max(1, Math.min(config.pause_after || 100, Math.min(10, computedBatch)));
 
     const batch = allMessages.slice(0, safeBatch);
-    console.log(`📦 Lote seguro Grupos Fzap: safeBatch=${safeBatch}`);
+    console.log(`📦 Lote grupos: safeBatch=${safeBatch}`);
 
     await ensureSession();
 
@@ -250,7 +213,9 @@ Deno.serve(async (req) => {
         await processMessage(msg);
         await supabaseClient.from('group_messages').update({ status: 'sent', sent_at: new Date().toISOString(), error_message: null }).eq('id', msg.id);
         sentCount++;
+        console.log(`✅ Grupo msg enviada: ${msg.id}`);
       } catch (err: any) {
+        console.error(`❌ Falha grupo msg ${msg.id}:`, err.message);
         await supabaseClient.from('group_messages').update({ status: 'failed', error_message: err.message }).eq('id', msg.id);
         failedCount++;
       }

@@ -5,6 +5,32 @@ Formato: [MAJOR.MINOR.PATCH] - YYYY-MM-DD
 
 ---
 
+## [2.2.0] - 2026-05-08
+
+### Refactored
+- **Migração completa para Evolution Go API** (docs.evolutionfoundation.com.br/evolution-go)
+  - Bug crítico corrigido: campo do QR Code é `data.Qrcode` (não `data.QRCode`)
+  - Autenticação: apenas header `apikey` (admin key para criação, instance token para sessão)
+  - Status: campos `data.Connected` e `data.LoggedIn` são PascalCase na Evolution Go
+
+### Changed (Endpoints)
+- Criar instância: `POST /admin/users` → `POST /instance/create`
+- Conectar: `POST /session/connect` → `POST /instance/connect`
+- QR Code: `GET /session/qr` → `GET /instance/qr` (campo `data.Qrcode`)
+- Status: `GET /session/status` → `GET /instance/status` (campos `Connected`, `LoggedIn`)
+- Logout: `POST /session/disconnect` → `DELETE /instance/logout`
+- Enviar texto: `POST /chat/send/text` → `POST /send/text` (campo `text` não `body`)
+- Enviar mídia: `POST /chat/send/{type}` → `POST /send/media` (campo `type`)
+- Grupos: `GET /group/list` com `apikey` (antes `token`)
+
+### Fixed
+- QR Code nunca renderizava: campo JSON estava errado em todas as funções
+- Header `token` removido: Evolution Go usa apenas `apikey`
+- Status desconectado incorreto: PascalCase `LoggedIn` vs minúsculo `loggedIn`
+- Endpoints `/chat/send/*` não existem na Evolution Go
+
+---
+
 ## [2.1.0] - 2026-05-07
 
 ### Added

@@ -1,7 +1,10 @@
 /**
- * Edge Function: test-connection (Fzap v1.23.0)
- * Endpoint Fzap: GET /session/status  (era GET /instance/status)
- * Header: token: <instance_token>
+ * Edge Function: test-connection (Evolution Go API)
+ *
+ * Endpoint: GET /instance/status  |  apikey = INSTANCE TOKEN
+ * Resposta: { data: { Connected: bool, LoggedIn: bool, Name: string } }
+ *
+ * Campos com inicial MAIÚSCULA: Connected, LoggedIn (diferente do Fzap antigo)
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -37,7 +40,7 @@ Deno.serve(async (req: Request) => {
 
     if (configError || !config) {
       return new Response(
-        JSON.stringify({ success: false, message: 'Configure sua instância Fzap primeiro.' }),
+        JSON.stringify({ success: false, message: 'Configure sua instância WhatsApp primeiro.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -49,19 +52,19 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const fzapUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
-    if (!fzapUrl) throw new Error('URL da Fzap não configurada nos Secrets');
+    const apiUrl = Deno.env.get('EVOLUTION_API_URL') ?? config.base_url;
+    if (!apiUrl) throw new Error('URL da API não configurada nos Secrets');
 
-    console.log(`[test-connection] Testando conexão: ${config.instance_id}`);
+    console.log(`[test-connection] Testando: ${config.instance_id}`);
 
-    // GET /session/status (era GET /instance/status)
-    const res = await fetch(`${fzapUrl}/session/status`, {
+    // GET /instance/status | apikey = INSTANCE TOKEN (Evolution Go)
+    const res = await fetch(`${apiUrl}/instance/status`, {
       method: 'GET',
-      headers: { 'token': config.token, 'Content-Type': 'application/json' },
+      headers: { 'apikey': config.token },
     });
 
     const body = await res.text();
-    console.log(`[test-connection] Resposta: ${res.status} ${body.substring(0, 200)}`);
+    console.log(`[test-connection] Resposta (${res.status}): ${body.substring(0, 200)}`);
 
     if (!res.ok) {
       return new Response(
@@ -71,16 +74,19 @@ Deno.serve(async (req: Request) => {
     }
 
     const data = JSON.parse(body);
-    // Fzap: loggedIn = WhatsApp autenticado
-    const isConnected = data.data?.loggedIn === true;
+    // Evolution Go: campos com inicial MAIÚSCULA (Connected, LoggedIn)
+    const isConnected = data.data?.Connected === true;
+    const isLoggedIn  = data.data?.LoggedIn  === true;
 
     return new Response(
       JSON.stringify({
         success: true,
-        connected: isConnected,
-        message: isConnected
+        connected: isLoggedIn,
+        message: isLoggedIn
           ? '✅ WhatsApp conectado e funcionando!'
-          : '⚠️ Instância encontrada, mas desconectada. Escaneie o QR Code.',
+          : isConnected
+            ? '⚠️ Sessão iniciada, mas não autenticada. Escaneie o QR Code.'
+            : '⚠️ Instância desconectada. Clique em Conectar WhatsApp.',
         data: data.data,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
